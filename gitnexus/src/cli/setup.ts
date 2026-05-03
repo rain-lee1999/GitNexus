@@ -30,10 +30,10 @@ interface SetupResult {
  * Resolve the absolute path to the `gitnexus` binary if it's installed
  * globally (or via npm -g / yarn global). Returns null when not found.
  */
-function resolveGitnexusBin(): string | null {
+function resolveCommandBin(commandName: string): string | null {
   try {
     const cmd = process.platform === 'win32' ? 'where' : 'which';
-    const resolved = execFileSync(cmd, ['gitnexus'], {
+    const resolved = execFileSync(cmd, [commandName], {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -44,6 +44,10 @@ function resolveGitnexusBin(): string | null {
   } catch {
     return null;
   }
+}
+
+function resolveGitnexusBin(): string | null {
+  return resolveCommandBin('gitnexus');
 }
 
 /**
@@ -484,6 +488,38 @@ async function setupCodex(result: SetupResult): Promise<void> {
   }
 }
 
+async function setupHermes(result: SetupResult): Promise<void> {
+  const hermesDir = path.join(os.homedir(), '.hermes');
+  const hermesBin = resolveCommandBin('hermes');
+  const hasHermesHome = await dirExists(hermesDir);
+
+  if (!hasHermesHome) {
+    result.skipped.push('Hermes (not installed)');
+    return;
+  }
+
+  if (!hermesBin) {
+    result.errors.push(
+      'Hermes: ~/.hermes exists but `hermes` command is not on PATH — run `hermes mcp add gitnexus --command gitnexus --args mcp` manually',
+    );
+    return;
+  }
+
+  try {
+    const entry = getMcpEntry();
+    await execFileAsync(
+      hermesBin,
+      ['mcp', 'add', 'gitnexus', '--command', entry.command, '--args', ...entry.args],
+      {
+        shell: process.platform === 'win32',
+      },
+    );
+    result.configured.push('Hermes');
+  } catch (err: any) {
+    result.errors.push(`Hermes: ${err.message}`);
+  }
+}
+
 // ─── Skill Installation ───────────────────────────────────────────
 
 /**
@@ -618,6 +654,26 @@ async function installCodexSkills(result: SetupResult): Promise<void> {
   }
 }
 
+/**
+ * Install global Hermes skills to ~/.hermes/skills/software-development/.
+ */
+async function installHermesSkills(result: SetupResult): Promise<void> {
+  const hermesDir = path.join(os.homedir(), '.hermes');
+  if (!(await dirExists(hermesDir))) return;
+
+  const skillsDir = path.join(hermesDir, 'skills', 'software-development');
+  try {
+    const installed = await installSkillsTo(skillsDir);
+    if (installed.length > 0) {
+      result.configured.push(
+        `Hermes skills (${installed.length} skills → ~/.hermes/skills/software-development/)`,
+      );
+    }
+  } catch (err: any) {
+    result.errors.push(`Hermes skills: ${err.message}`);
+  }
+}
+
 // ─── Main command ──────────────────────────────────────────────────
 
 export const setupCommand = async () => {
@@ -641,6 +697,7 @@ export const setupCommand = async () => {
   await setupClaudeCode(result);
   await setupOpenCode(result);
   await setupCodex(result);
+  await setupHermes(result);
 
   // Install global skills for platforms that support them
   await installClaudeCodeSkills(result);
@@ -648,6 +705,7 @@ export const setupCommand = async () => {
   await installCursorSkills(result);
   await installOpenCodeSkills(result);
   await installCodexSkills(result);
+  await installHermesSkills(result);
 
   // Print results
   if (result.configured.length > 0) {

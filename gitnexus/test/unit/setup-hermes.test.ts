@@ -1,0 +1,135 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
+
+const execFileMock = vi.fn((...args: any[]) => {
+  const callback = args.at(-1);
+  if (typeof callback === 'function') {
+    callback(null, '', '');
+  }
+});
+
+const execFileSyncMock = vi.fn((cmd: string, args: string[]) => {
+  const commandName = args[0];
+  if (cmd === 'which' && commandName === 'hermes') return '/usr/local/bin/hermes\n';
+  if (cmd === 'which' && commandName === 'gitnexus') return '/usr/local/bin/gitnexus\n';
+  throw new Error('not found');
+});
+
+vi.mock('child_process', () => ({
+  execFile: execFileMock,
+  execFileSync: execFileSyncMock,
+}));
+
+describe('setupCommand Hermes support', () => {
+  let tempHome: string;
+  let originalHome: string | undefined;
+  let originalUserProfile: string | undefined;
+  let platformDescriptor: PropertyDescriptor | undefined;
+
+  const setPlatform = (value: NodeJS.Platform) => {
+    Object.defineProperty(process, 'platform', {
+      value,
+      configurable: true,
+    });
+  };
+
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+
+    originalHome = process.env.HOME;
+    originalUserProfile = process.env.USERPROFILE;
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-hermes-setup-'));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
+
+    platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    setPlatform('darwin');
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+
+    if (platformDescriptor) {
+      Object.defineProperty(process, 'platform', platformDescriptor);
+    }
+
+    process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  });
+
+  it('invokes hermes mcp add with the resolved global gitnexus binary', async () => {
+    await fs.mkdir(path.join(tempHome, '.hermes'), { recursive: true });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    expect(execFileMock).toHaveBeenCalledWith(
+      '/usr/local/bin/hermes',
+      ['mcp', 'add', 'gitnexus', '--command', '/usr/local/bin/gitnexus', '--args', 'mcp'],
+      { shell: false },
+      expect.any(Function),
+    );
+  });
+
+  it('invokes hermes mcp add with npx fallback when gitnexus is not on PATH', async () => {
+    await fs.mkdir(path.join(tempHome, '.hermes'), { recursive: true });
+    execFileSyncMock.mockImplementation((cmd: string, args: string[]) => {
+      const commandName = args[0];
+      if (cmd === 'which' && commandName === 'hermes') return '/usr/local/bin/hermes\n';
+      if (cmd === 'which' && commandName === 'gitnexus') throw new Error('not found');
+      throw new Error('not found');
+    });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    expect(execFileMock).toHaveBeenCalledWith(
+      '/usr/local/bin/hermes',
+      ['mcp', 'add', 'gitnexus', '--command', 'npx', '--args', '-y', 'gitnexus@latest', 'mcp'],
+      { shell: false },
+      expect.any(Function),
+    );
+  });
+
+  it('skips Hermes when neither ~/.hermes nor hermes command exists', async () => {
+    execFileSyncMock.mockImplementation(() => {
+      throw new Error('not found');
+    });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    expect(execFileMock).not.toHaveBeenCalled();
+    await expect(fs.access(path.join(tempHome, '.hermes'))).rejects.toThrow();
+  });
+
+  it('installs GitNexus skills into the Hermes software-development skill category', async () => {
+    await fs.mkdir(path.join(tempHome, '.hermes'), { recursive: true });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const skillContent = await fs.readFile(
+      path.join(tempHome, '.hermes', 'skills', 'software-development', 'gitnexus-cli', 'SKILL.md'),
+      'utf-8',
+    );
+    expect(skillContent).toContain('GitNexus CLI Commands');
+  });
+
+  it('does not create other editor config files during Hermes-only setup', async () => {
+    await fs.mkdir(path.join(tempHome, '.hermes'), { recursive: true });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    await expect(fs.access(path.join(tempHome, '.claude.json'))).rejects.toThrow();
+    await expect(fs.access(path.join(tempHome, '.cursor'))).rejects.toThrow();
+    await expect(fs.access(path.join(tempHome, '.codex'))).rejects.toThrow();
+    await expect(fs.access(path.join(tempHome, '.config', 'opencode'))).rejects.toThrow();
+  });
+});

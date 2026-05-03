@@ -117,6 +117,7 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 | **Claude Code** | Yes | Yes    | Yes (PreToolUse + PostToolUse) | **Full** |
 | **Cursor**      | Yes | Yes    | —                   | MCP + Skills   |
 | **Codex**       | Yes | Yes    | —                   | MCP + Skills   |
+| **Hermes**      | Yes | Yes    | —                   | MCP + Skills   |
 | **Windsurf**    | Yes | —     | —                   | MCP            |
 | **OpenCode**    | Yes | Yes    | —                   | MCP + Skills   |
 
@@ -150,6 +151,18 @@ claude mcp add gitnexus -- cmd /c npx -y gitnexus@latest mcp
 ```bash
 codex mcp add gitnexus -- npx -y gitnexus@latest mcp
 ```
+
+**Hermes** (full support — MCP + skills):
+
+```bash
+# If gitnexus is globally installed
+hermes mcp add gitnexus --command gitnexus --args mcp
+
+# Or without a global install
+hermes mcp add gitnexus --command npx --args -y gitnexus@latest mcp
+```
+
+After setup, start a new Hermes session or run `/reload-mcp` in an existing session.
 
 **Cursor** (`~/.cursor/mcp.json` — global, works for all projects):
 
