@@ -9,7 +9,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { execFile, execFileSync } from 'child_process';
+import { execFile, execFileSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { glob } from 'glob';
@@ -19,6 +19,58 @@ import { getGlobalDir } from '../storage/repo-manager.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const execFileAsync = promisify(execFile);
+const EXTERNAL_COMMAND_TIMEOUT_MS = 60_000;
+
+async function execFileWithInput(
+  command: string,
+  args: string[],
+  options: { input?: string; shell?: boolean; timeoutMs?: number } = {},
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      shell: options.shell ?? false,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const timeoutMs = options.timeoutMs ?? EXTERNAL_COMMAND_TIMEOUT_MS;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill('SIGTERM');
+      reject(new Error(`command timed out after ${timeoutMs}ms: ${command} ${args.join(' ')}`));
+    }, timeoutMs);
+
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      const suffix = stderr.trim() || stdout.trim() || signal || `exit code ${code}`;
+      reject(new Error(suffix));
+    });
+
+    child.stdin?.end(options.input ?? '');
+  });
+}
 
 interface SetupResult {
   configured: string[];
@@ -507,10 +559,11 @@ async function setupHermes(result: SetupResult): Promise<void> {
 
   try {
     const entry = getMcpEntry();
-    await execFileAsync(
+    await execFileWithInput(
       hermesBin,
       ['mcp', 'add', 'gitnexus', '--command', entry.command, '--args', ...entry.args],
       {
+        input: 'Y\n',
         shell: process.platform === 'win32',
       },
     );

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { EventEmitter } from 'events';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -17,9 +18,19 @@ const execFileSyncMock = vi.fn((cmd: string, args: string[]) => {
   throw new Error('not found');
 });
 
+const spawnMock = vi.fn(() => {
+  const child: any = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.stdin = { end: vi.fn() };
+  process.nextTick(() => child.emit('close', 0, null));
+  return child;
+});
+
 vi.mock('child_process', () => ({
   execFile: execFileMock,
   execFileSync: execFileSyncMock,
+  spawn: spawnMock,
 }));
 
 describe('setupCommand Hermes support', () => {
@@ -68,12 +79,12 @@ describe('setupCommand Hermes support', () => {
     const { setupCommand } = await import('../../src/cli/setup.js');
     await setupCommand();
 
-    expect(execFileMock).toHaveBeenCalledWith(
+    expect(spawnMock).toHaveBeenCalledWith(
       '/usr/local/bin/hermes',
       ['mcp', 'add', 'gitnexus', '--command', '/usr/local/bin/gitnexus', '--args', 'mcp'],
-      { shell: false },
-      expect.any(Function),
+      { shell: false, stdio: ['pipe', 'pipe', 'pipe'] },
     );
+    expect(spawnMock.mock.results[0].value.stdin.end).toHaveBeenCalledWith('Y\n');
   });
 
   it('invokes hermes mcp add with npx fallback when gitnexus is not on PATH', async () => {
@@ -88,12 +99,12 @@ describe('setupCommand Hermes support', () => {
     const { setupCommand } = await import('../../src/cli/setup.js');
     await setupCommand();
 
-    expect(execFileMock).toHaveBeenCalledWith(
+    expect(spawnMock).toHaveBeenCalledWith(
       '/usr/local/bin/hermes',
       ['mcp', 'add', 'gitnexus', '--command', 'npx', '--args', '-y', 'gitnexus@latest', 'mcp'],
-      { shell: false },
-      expect.any(Function),
+      { shell: false, stdio: ['pipe', 'pipe', 'pipe'] },
     );
+    expect(spawnMock.mock.results[0].value.stdin.end).toHaveBeenCalledWith('Y\n');
   });
 
   it('skips Hermes when neither ~/.hermes nor hermes command exists', async () => {
@@ -104,7 +115,7 @@ describe('setupCommand Hermes support', () => {
     const { setupCommand } = await import('../../src/cli/setup.js');
     await setupCommand();
 
-    expect(execFileMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
     await expect(fs.access(path.join(tempHome, '.hermes'))).rejects.toThrow();
   });
 
