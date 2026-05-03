@@ -154,16 +154,17 @@ codex mcp add gitnexus -- npx -y gitnexus@latest mcp
 
 **Hermes** (full support — MCP + skills):
 
-Install GitNexus from this repository checkout, then run setup:
+Install GitNexus from this repository checkout, then run setup. Run these commands from the nested `gitnexus/` package directory, not the repository root:
 
 ```bash
 cd /path/to/GitNexus/gitnexus
+npm install
 npm install -g .
 gitnexus setup
 hermes mcp test gitnexus
 ```
 
-`gitnexus setup` auto-detects Hermes when `~/.hermes` and the `hermes` command are present. It registers GitNexus as a Hermes MCP server and installs GitNexus skills into `~/.hermes/skills/software-development/`.
+`npm install` installs the local build dependencies needed by GitNexus' `prepack` build step. `gitnexus setup` then auto-detects Hermes when `~/.hermes` and the `hermes` command are present. It registers GitNexus as a Hermes MCP server and installs GitNexus skills into `~/.hermes/skills/software-development/`.
 
 After setup, start a new Hermes session or run `/reload-mcp` in an existing session.
 
