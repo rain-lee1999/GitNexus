@@ -132,6 +132,27 @@ describe('setupCommand Hermes support', () => {
     expect(skillContent).toContain('GitNexus CLI Commands');
   });
 
+  it('preserves existing Hermes skill files instead of overwriting local edits', async () => {
+    const skillPath = path.join(
+      tempHome,
+      '.hermes',
+      'skills',
+      'software-development',
+      'gitnexus-cli',
+      'SKILL.md',
+    );
+    await fs.mkdir(path.dirname(skillPath), { recursive: true });
+    await fs.writeFile(skillPath, '# Local Hermes GitNexus notes\n\nDo not overwrite me.', 'utf-8');
+    await fs.mkdir(path.join(tempHome, '.hermes'), { recursive: true });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const skillContent = await fs.readFile(skillPath, 'utf-8');
+    expect(skillContent).toBe('# Local Hermes GitNexus notes\n\nDo not overwrite me.');
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('preserved existing'));
+  });
+
   it('does not create other editor config files during Hermes-only setup', async () => {
     await fs.mkdir(path.join(tempHome, '.hermes'), { recursive: true });
 

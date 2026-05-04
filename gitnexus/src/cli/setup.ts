@@ -266,8 +266,10 @@ async function installClaudeCodeSkills(result: SetupResult): Promise<void> {
   const skillsDir = path.join(claudeDir, 'skills');
   try {
     const installed = await installSkillsTo(skillsDir);
-    if (installed.length > 0) {
-      result.configured.push(`Claude Code skills (${installed.length} skills → ~/.claude/skills/)`);
+    if (installed.installed.length > 0) {
+      result.configured.push(
+        `Claude Code skills (${installed.installed.length} skills → ~/.claude/skills/)`,
+      );
     }
   } catch (err: any) {
     result.errors.push(`Claude Code skills: ${err.message}`);
@@ -584,8 +586,26 @@ async function setupHermes(result: SetupResult): Promise<void> {
  *   - Flat file:  skills/{name}.md           → copied as SKILL.md
  *   - Directory:  skills/{name}/SKILL.md     → copied recursively (includes references/, etc.)
  */
-async function installSkillsTo(targetDir: string): Promise<string[]> {
+interface SkillInstallResult {
+  installed: string[];
+  preserved: string[];
+}
+
+async function skillFileExists(skillDir: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(path.join(skillDir, 'SKILL.md'));
+    return stat.isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function installSkillsTo(
+  targetDir: string,
+  options: { preserveExisting?: boolean } = {},
+): Promise<SkillInstallResult> {
   const installed: string[] = [];
+  const preserved: string[] = [];
   const skillsRoot = path.join(__dirname, '..', '..', 'skills');
 
   let flatFiles: string[] = [];
@@ -596,7 +616,7 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
       glob('*/SKILL.md', { cwd: skillsRoot }),
     ]);
   } catch {
-    return [];
+    return { installed, preserved };
   }
 
   const skillSources = new Map<string, { isDirectory: boolean }>();
@@ -615,6 +635,11 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
     const skillDir = path.join(targetDir, skillName);
 
     try {
+      if (options.preserveExisting && (await skillFileExists(skillDir))) {
+        preserved.push(skillName);
+        continue;
+      }
+
       if (source.isDirectory) {
         const dirSource = path.join(skillsRoot, skillName);
         await copyDirRecursive(dirSource, skillDir);
@@ -631,7 +656,7 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
     }
   }
 
-  return installed;
+  return { installed, preserved };
 }
 
 /**
@@ -661,8 +686,10 @@ async function installCursorSkills(result: SetupResult): Promise<void> {
   const skillsDir = path.join(cursorDir, 'skills');
   try {
     const installed = await installSkillsTo(skillsDir);
-    if (installed.length > 0) {
-      result.configured.push(`Cursor skills (${installed.length} skills → ~/.cursor/skills/)`);
+    if (installed.installed.length > 0) {
+      result.configured.push(
+        `Cursor skills (${installed.installed.length} skills → ~/.cursor/skills/)`,
+      );
     }
   } catch (err: any) {
     result.errors.push(`Cursor skills: ${err.message}`);
@@ -679,9 +706,9 @@ async function installOpenCodeSkills(result: SetupResult): Promise<void> {
   const skillsDir = path.join(opencodeDir, 'skills');
   try {
     const installed = await installSkillsTo(skillsDir);
-    if (installed.length > 0) {
+    if (installed.installed.length > 0) {
       result.configured.push(
-        `OpenCode skills (${installed.length} skills → ~/.config/opencode/skill/)`,
+        `OpenCode skills (${installed.installed.length} skills → ~/.config/opencode/skill/)`,
       );
     }
   } catch (err: any) {
@@ -699,8 +726,10 @@ async function installCodexSkills(result: SetupResult): Promise<void> {
   const skillsDir = path.join(os.homedir(), '.agents', 'skills');
   try {
     const installed = await installSkillsTo(skillsDir);
-    if (installed.length > 0) {
-      result.configured.push(`Codex skills (${installed.length} skills → ~/.agents/skills/)`);
+    if (installed.installed.length > 0) {
+      result.configured.push(
+        `Codex skills (${installed.installed.length} skills → ~/.agents/skills/)`,
+      );
     }
   } catch (err: any) {
     result.errors.push(`Codex skills: ${err.message}`);
@@ -716,10 +745,10 @@ async function installHermesSkills(result: SetupResult): Promise<void> {
 
   const skillsDir = path.join(hermesDir, 'skills', 'software-development');
   try {
-    const installed = await installSkillsTo(skillsDir);
-    if (installed.length > 0) {
+    const installed = await installSkillsTo(skillsDir, { preserveExisting: true });
+    if (installed.installed.length > 0 || installed.preserved.length > 0) {
       result.configured.push(
-        `Hermes skills (${installed.length} skills → ~/.hermes/skills/software-development/)`,
+        `Hermes skills (${installed.installed.length} installed, ${installed.preserved.length} preserved existing → ~/.hermes/skills/software-development/)`,
       );
     }
   } catch (err: any) {
