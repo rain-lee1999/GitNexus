@@ -30,13 +30,14 @@ describe('run-analyze module', () => {
         cwd: tmpRepo.dbPath,
         encoding: 'utf-8',
       }).trim();
-      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
       const meta: RepoMeta = {
         repoPath: tmpRepo.dbPath,
         lastCommit: currentCommit,
         indexedAt: new Date().toISOString(),
       };
       await saveMeta(storagePath, meta);
+      await fs.writeFile(lbugPath, 'db');
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const result = await runFullAnalysis(
@@ -51,6 +52,50 @@ describe('run-analyze module', () => {
       await expect(
         fs.readFile(path.join(tmpRepo.dbPath, '.gitnexus', '.gitignore'), 'utf-8'),
       ).resolves.toBe('*\n');
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('rebuilds instead of taking the fast path when current metadata has leftover LadybugDB WAL', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-unhealthy-fast-path-');
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      await fs.writeFile(path.join(tmpRepo.dbPath, 'index.ts'), 'export const value = 1;\n');
+      execSync('git add index.ts', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=test -c user.email=test@test commit -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      const currentCommit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      const meta: RepoMeta = {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: currentCommit,
+        indexedAt: new Date('2026-05-04T00:00:00.000Z').toISOString(),
+        stats: { files: 1, nodes: 1, edges: 0 },
+      };
+      await saveMeta(storagePath, meta);
+      await fs.writeFile(lbugPath, 'old-db');
+      await fs.writeFile(`${lbugPath}.wal`, 'partial wal');
+
+      const logs: string[] = [];
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        {},
+        {
+          onProgress: () => {},
+          onLog: (msg) => logs.push(msg),
+        },
+      );
+
+      expect(result.alreadyUpToDate).toBeUndefined();
+      expect(logs.join('\n')).toContain('index health is not OK');
+      await expect(fs.stat(`${lbugPath}.wal`)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await tmpRepo.cleanup();
     }

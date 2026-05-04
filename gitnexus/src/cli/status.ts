@@ -4,7 +4,12 @@
  * Shows the indexing status of the current repository.
  */
 
-import { findRepo, getStoragePaths, hasKuzuIndex } from '../storage/repo-manager.js';
+import {
+  findRepo,
+  getIndexHealth,
+  getStoragePaths,
+  hasKuzuIndex,
+} from '../storage/repo-manager.js';
 import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
 
 export const statusCommand = async () => {
@@ -32,10 +37,19 @@ export const statusCommand = async () => {
 
   const currentCommit = getCurrentCommit(repo.repoPath);
   const isUpToDate = currentCommit === repo.meta.lastCommit;
+  const health = await getIndexHealth(repo.repoPath);
 
   console.log(`Repository: ${repo.repoPath}`);
   console.log(`Indexed: ${new Date(repo.meta.indexedAt).toLocaleString()}`);
   console.log(`Indexed commit: ${repo.meta.lastCommit?.slice(0, 7)}`);
   console.log(`Current commit: ${currentCommit?.slice(0, 7)}`);
+
+  if (!health.ok) {
+    console.log('Index health: ⚠️ incomplete or interrupted');
+    console.log(`Reason: ${health.message ?? health.reason}`);
+    console.log('Run: gitnexus clean --force && gitnexus analyze');
+    return;
+  }
+
   console.log(`Status: ${isUpToDate ? '✅ up-to-date' : '⚠️ stale (re-run gitnexus analyze)'}`);
 };

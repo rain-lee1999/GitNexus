@@ -97,6 +97,23 @@ export interface RegistryEntry {
 
 const GITNEXUS_DIR = '.gitnexus';
 const GITNEXUS_EXCLUDE_ENTRY = `${GITNEXUS_DIR}/`;
+const ANALYZE_INCOMPLETE_MARKER = 'analyze-incomplete.json';
+
+export const LBUG_SIDECAR_SUFFIXES = ['', '.wal', '.lock', '.shadow', '.wal.checkpoint'] as const;
+
+export type IndexHealthReason =
+  | 'healthy'
+  | 'incomplete-marker'
+  | 'leftover-sidecar'
+  | 'leftover-temp'
+  | 'missing-db';
+
+export interface IndexHealth {
+  ok: boolean;
+  reason: IndexHealthReason;
+  message?: string;
+  paths: string[];
+}
 
 // ─── Local Storage Helpers ─────────────────────────────────────────────
 
@@ -117,6 +134,143 @@ export const getStoragePaths = (repoPath: string) => {
     lbugPath: path.join(storagePath, 'lbug'),
     metaPath: path.join(storagePath, 'meta.json'),
   };
+};
+
+const pathExists = async (p: string): Promise<boolean> => {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export const getAnalysisIncompleteMarkerPath = (storagePath: string): string =>
+  path.join(storagePath, ANALYZE_INCOMPLETE_MARKER);
+
+export const createAnalysisIncompleteMarker = async (
+  storagePath: string,
+  reason: string,
+): Promise<void> => {
+  await fs.mkdir(storagePath, { recursive: true });
+  await fs.writeFile(
+    getAnalysisIncompleteMarkerPath(storagePath),
+    JSON.stringify({ reason, startedAt: new Date().toISOString(), pid: process.pid }, null, 2),
+    'utf-8',
+  );
+};
+
+export const clearAnalysisIncompleteMarker = async (storagePath: string): Promise<void> => {
+  await fs.rm(getAnalysisIncompleteMarkerPath(storagePath), { force: true });
+};
+
+export const createTempLbugPath = (storagePath: string, tag = `${process.pid}-${Date.now()}`): string =>
+  path.join(storagePath, `lbug.tmp-${tag}`);
+
+export const getLbugArtifactPaths = (lbugPath: string): string[] =>
+  LBUG_SIDECAR_SUFFIXES.map((suffix) => `${lbugPath}${suffix}`);
+
+export const getExistingLbugArtifacts = async (lbugPath: string): Promise<string[]> => {
+  const existing: string[] = [];
+  for (const p of getLbugArtifactPaths(lbugPath)) {
+    if (await pathExists(p)) existing.push(p);
+  }
+  return existing;
+};
+
+export const cleanupLbugArtifacts = async (lbugPath: string): Promise<void> => {
+  for (const p of getLbugArtifactPaths(lbugPath)) {
+    await fs.rm(p, { recursive: true, force: true });
+  }
+};
+
+export const cleanupTempLbugArtifacts = async (storagePath: string): Promise<void> => {
+  try {
+    const entries = await fs.readdir(storagePath);
+    await Promise.all(
+      entries
+        .filter((entry) => entry.startsWith('lbug.tmp-'))
+        .map((entry) => fs.rm(path.join(storagePath, entry), { recursive: true, force: true })),
+    );
+  } catch (err: any) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+};
+
+export const promoteLbugDatabase = async (tempLbugPath: string, finalLbugPath: string): Promise<void> => {
+  const tempArtifacts = await getExistingLbugArtifacts(tempLbugPath);
+  const hasMainDb = tempArtifacts.includes(tempLbugPath);
+  if (!hasMainDb) {
+    throw new Error(`Cannot promote LadybugDB index: missing temporary database ${tempLbugPath}`);
+  }
+
+  await cleanupLbugArtifacts(finalLbugPath);
+
+  for (const suffix of LBUG_SIDECAR_SUFFIXES) {
+    const from = `${tempLbugPath}${suffix}`;
+    if (await pathExists(from)) {
+      await fs.rename(from, `${finalLbugPath}${suffix}`);
+    }
+  }
+};
+
+export const getIndexHealth = async (repoPath: string): Promise<IndexHealth> => {
+  const { storagePath, lbugPath } = getStoragePaths(repoPath);
+  const markerPath = getAnalysisIncompleteMarkerPath(storagePath);
+
+  if (await pathExists(markerPath)) {
+    return {
+      ok: false,
+      reason: 'incomplete-marker',
+      message: `analyze was interrupted or did not finalize; marker remains at ${markerPath}`,
+      paths: [markerPath],
+    };
+  }
+
+  if (!(await pathExists(lbugPath))) {
+    return {
+      ok: false,
+      reason: 'missing-db',
+      message: `LadybugDB index is missing at ${lbugPath}`,
+      paths: [lbugPath],
+    };
+  }
+
+  try {
+    const entries = await fs.readdir(storagePath);
+    const tempPaths = entries
+      .filter((entry) => entry.startsWith('lbug.tmp-'))
+      .map((entry) => path.join(storagePath, entry));
+    if (tempPaths.length > 0) {
+      return {
+        ok: false,
+        reason: 'leftover-temp',
+        message: `temporary LadybugDB rebuild artifacts remain: ${tempPaths.map((p) => path.basename(p)).join(', ')}`,
+        paths: tempPaths,
+      };
+    }
+  } catch (err: any) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+
+  const leftoverSidecars: string[] = [];
+  for (const suffix of LBUG_SIDECAR_SUFFIXES.filter((suffix) => suffix !== '')) {
+    const p = `${lbugPath}${suffix}`;
+    if (await pathExists(p)) leftoverSidecars.push(p);
+  }
+
+  if (leftoverSidecars.length > 0) {
+    return {
+      ok: false,
+      reason: 'leftover-sidecar',
+      message: `LadybugDB sidecar files remain after analyze: ${leftoverSidecars
+        .map((p) => path.basename(p))
+        .join(', ')}`,
+      paths: leftoverSidecars,
+    };
+  }
+
+  return { ok: true, reason: 'healthy', paths: [] };
 };
 
 /**

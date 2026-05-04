@@ -10,7 +10,6 @@
  */
 
 import path from 'path';
-import fs from 'fs/promises';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
 import {
   initLbug,
@@ -29,6 +28,13 @@ import {
   ensureGitNexusIgnored,
   registerRepo,
   cleanupOldKuzuFiles,
+  cleanupLbugArtifacts,
+  cleanupTempLbugArtifacts,
+  clearAnalysisIncompleteMarker,
+  createAnalysisIncompleteMarker,
+  createTempLbugPath,
+  promoteLbugDatabase,
+  getIndexHealth,
 } from '../storage/repo-manager.js';
 import { getCurrentCommit, getRemoteUrl, hasGitDir, getInferredRepoName } from '../storage/git.js';
 import type { CachedEmbedding } from './embeddings/types.js';
@@ -161,18 +167,26 @@ export async function runFullAnalysis(
   const repoHasGit = hasGitDir(repoPath);
   const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
   const existingMeta = await loadMeta(storagePath);
+  const indexHealth = existingMeta ? await getIndexHealth(repoPath) : undefined;
 
   // ── Early-return: already up to date ──────────────────────────────
   if (existingMeta && !options.force && existingMeta.lastCommit === currentCommit) {
     // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
     if (currentCommit !== '') {
-      await ensureGitNexusIgnored(repoPath);
-      return {
-        repoName: options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath),
-        repoPath,
-        stats: existingMeta.stats ?? {},
-        alreadyUpToDate: true,
-      };
+      if (!indexHealth?.ok) {
+        log(
+          `Existing index metadata is current, but index health is not OK ` +
+            `(${indexHealth?.message ?? indexHealth?.reason}). Rebuilding index...`,
+        );
+      } else {
+        await ensureGitNexusIgnored(repoPath);
+        return {
+          repoName: options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath),
+          repoPath,
+          stats: existingMeta.stats ?? {},
+          alreadyUpToDate: true,
+        };
+      }
     }
   }
 
@@ -260,16 +274,13 @@ export async function runFullAnalysis(
   progress('lbug', 60, 'Loading into LadybugDB...');
 
   await closeLbug();
-  const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock`];
-  for (const f of lbugFiles) {
-    try {
-      await fs.rm(f, { recursive: true, force: true });
-    } catch {
-      /* swallow */
-    }
-  }
+  await cleanupTempLbugArtifacts(storagePath);
+  await createAnalysisIncompleteMarker(storagePath, 'analyze rebuild in progress');
 
-  await initLbug(lbugPath);
+  const tempLbugPath = createTempLbugPath(storagePath);
+  await cleanupLbugArtifacts(tempLbugPath);
+
+  await initLbug(tempLbugPath);
   try {
     // All work after initLbug is wrapped in try/finally to ensure closeLbug()
     // is called even if an error occurs — the module-level singleton DB handle
@@ -433,6 +444,8 @@ export async function runFullAnalysis(
         },
       },
     };
+    await closeLbug();
+    await promoteLbugDatabase(tempLbugPath, lbugPath);
     await saveMeta(storagePath, meta);
     // Forward the --name alias and the registry-collision bypass bit.
     // `allowDuplicateName` is its own concern — independent from the
@@ -450,6 +463,7 @@ export async function runFullAnalysis(
 
     // Keep generated .gitnexus contents ignored without editing the user's root .gitignore.
     await ensureGitNexusIgnored(repoPath);
+    await clearAnalysisIncompleteMarker(storagePath);
 
     // ── Generate AI context files (best-effort) ───────────────────────
     let aggregatedClusterCount = 0;
