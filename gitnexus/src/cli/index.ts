@@ -20,6 +20,15 @@ program
   .action(createLazyAction(() => import('./setup.js'), 'setupCommand'));
 
 program
+  .command('update')
+  .description('Update the installed local GitNexus checkout and reinstall the CLI')
+  .option('--check', 'Check whether an update is available without installing anything')
+  .option('--simple', 'Fast update: pull, build, and reinstall; skip npm install/setup/analyze')
+  .option('--setup', 'Run gitnexus setup after updating')
+  .option('--yes', '-y', 'Assume yes for prompts where supported')
+  .action(createLazyAction(() => import('./update.js'), 'updateCommand'));
+
+program
   .command('analyze [path]')
   .description('Index a repository (full analysis)')
   .option('-f, --force', 'Force full re-index even if up to date')
