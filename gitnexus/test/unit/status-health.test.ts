@@ -33,7 +33,7 @@ describe('statusCommand index health warnings', () => {
     await tmpRepo.cleanup();
   });
 
-  it('does not report up-to-date when a stale LadybugDB WAL remains next to the index', async () => {
+  it('recommends a smaller embedding-preserving analyze when a stale LadybugDB WAL remains next to an embedded index', async () => {
     const currentCommit = execSync('git rev-parse HEAD', {
       cwd: tmpRepo.dbPath,
       encoding: 'utf-8',
@@ -43,7 +43,7 @@ describe('statusCommand index health warnings', () => {
       repoPath: tmpRepo.dbPath,
       lastCommit: currentCommit,
       indexedAt: '2026-05-04T00:00:00.000Z',
-      stats: { files: 1, nodes: 2, edges: 3 },
+      stats: { files: 1, nodes: 2, edges: 3, embeddings: 42 },
     };
     await saveMeta(storagePath, meta);
     await fs.writeFile(lbugPath, 'db');
@@ -55,7 +55,8 @@ describe('statusCommand index health warnings', () => {
     expect(output).toContain('Index health: ⚠️ incomplete or interrupted');
     expect(output).toContain('lbug.wal');
     expect(output).not.toContain('Status: ✅ up-to-date');
-    expect(output).toContain('Run: gitnexus clean --force && gitnexus analyze');
+    expect(output).toContain('Run: gitnexus analyze --embeddings');
+    expect(output).toContain('Fallback if analyze still fails: gitnexus clean --force && gitnexus analyze --embeddings');
   });
 
   it('reports up-to-date when metadata is current and no LadybugDB sidecars remain', async () => {

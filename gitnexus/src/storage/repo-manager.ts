@@ -51,6 +51,13 @@ export const canonicalizePath = (p: string): string => {
   }
 };
 
+export interface RepoCapability {
+  provider?: string;
+  status?: string;
+  exactScanLimit?: number;
+  reason?: string;
+}
+
 export interface RepoMeta {
   repoPath: string;
   lastCommit: string;
@@ -70,6 +77,11 @@ export interface RepoMeta {
     communities?: number;
     processes?: number;
     embeddings?: number;
+  };
+  capabilities?: {
+    graph?: RepoCapability;
+    fts?: RepoCapability;
+    vectorSearch?: RepoCapability;
   };
 }
 
