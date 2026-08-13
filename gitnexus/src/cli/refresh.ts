@@ -10,14 +10,19 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import fs from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import v8 from 'node:v8';
 import {
   ensureGitNexusIgnored,
+  getAnalysisLockPath,
+  getGlobalDir,
+  getGlobalRegistryLockPath,
+  getGlobalRegistryPath,
   getIndexHealth,
   getStoragePaths,
   loadMeta,
@@ -26,6 +31,9 @@ import {
 } from '../storage/repo-manager.js';
 import { getCurrentCommit, getGitRoot } from '../storage/git.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
+
+const _require = createRequire(import.meta.url);
+const yaml = _require('js-yaml') as typeof import('js-yaml');
 
 const STATE_FILE = 'state.json';
 const STATE_LOCK_FILE = 'state.lock';
@@ -38,7 +46,7 @@ const REQUEST_DEBOUNCE_MS = 15_000;
 const REQUEST_LEASE_MS = 45 * 60 * 1000;
 const ANALYSIS_HEAP_MB = 8192;
 
-type RefreshAction = 'init' | 'mark' | 'status' | 'ensure' | 'request';
+type RefreshAction = 'init' | 'mark' | 'status' | 'plan' | 'ensure' | 'request';
 type RequestState = 'queued' | 'already-queued' | 'unavailable';
 
 export interface RefreshOptions {
@@ -81,6 +89,34 @@ export interface RefreshStatus {
   health?: string;
   queued?: boolean;
   requestState?: RequestState;
+}
+
+/**
+ * A read-only declaration of paths an `init` / `ensure` may mutate. This is
+ * deliberately separate from status: a client can request authority for the
+ * GitNexus-owned filesystem surface before coordinator state exists.
+ */
+export interface RefreshWriteTarget {
+  path: string;
+  purpose: string;
+  willWrite: boolean;
+}
+
+export interface RefreshPlan {
+  worktreePath: string;
+  requiresWriteAccess: true;
+  /** Whether this plan includes the optional Serena prewarm write targets. */
+  coversOptionalSerena: boolean;
+  /**
+   * `writeTargets` is complete for GitNexus-owned work. It is deliberately
+   * false when `--with-serena` starts an external executable: language-server
+   * providers and toolchains can use additional environment-specific
+   * cache/install paths that GitNexus cannot enumerate safely in advance.
+   */
+  writeTargetsComplete: boolean;
+  /** Explicit disclosure for externally spawned Serena/LSP processes. */
+  externalWriteRisk?: string;
+  writeTargets: RefreshWriteTarget[];
 }
 
 interface RefreshPaths {
@@ -164,6 +200,231 @@ const getRefreshPaths = (worktreePath: string): RefreshPaths => {
     statePath: path.join(refreshPath, STATE_FILE),
     stateLockPath: path.join(refreshPath, STATE_LOCK_FILE),
     stalePath: path.join(refreshPath, STALE_DIR),
+  };
+};
+
+/**
+ * A refresh plan is an authority contract across a foreground CLI, hooks, and
+ * detached workers. A relative home would be resolved against each process's
+ * cwd and could therefore turn one approved plan into several physical
+ * registries/locks. Other legacy commands retain their historic behaviour;
+ * the coordinator rejects that ambiguity at its boundary.
+ */
+const validateRefreshHome = (): void => {
+  const configuredHome = process.env.GITNEXUS_HOME;
+  if (configuredHome && !path.isAbsolute(configuredHome)) {
+    throw new Error('GITNEXUS_HOME must be an absolute path when using `gitnexus refresh`.');
+  }
+};
+
+/**
+ * Linked worktrees have a `.git` file and `ensureGitNexusIgnored` deliberately
+ * leaves the common checkout's `info/exclude` alone. Keep a non-mutating
+ * entry in the plan so callers see that Git metadata was considered, but do
+ * not pretend the path below is a real writable target for linked worktrees.
+ */
+const getGitExcludeTarget = (worktreePath: string): RefreshWriteTarget => {
+  const dotGitPath = path.join(worktreePath, '.git');
+  try {
+    const dotGitStat = statSync(dotGitPath);
+    if (!dotGitStat.isDirectory()) {
+      return {
+        path: dotGitPath,
+        purpose: 'Git exclude metadata for .gitnexus (linked worktree: skipped)',
+        willWrite: false,
+      };
+    }
+  } catch {
+    return {
+      path: dotGitPath,
+      purpose: 'Git metadata unavailable; no exclude entry will be written',
+      willWrite: false,
+    };
+  }
+  return {
+    path: path.join(dotGitPath, 'info', 'exclude'),
+    purpose: 'Git exclude metadata for .gitnexus',
+    willWrite: true,
+  };
+};
+
+const getSerenaLanguages = (options: RefreshOptions): string[] =>
+  (options.serenaLanguage ?? options.serenaLanguages ?? []).map((language) => language.trim());
+
+const validateSerenaOptions = (options: RefreshOptions): void => {
+  const serenaLanguages = getSerenaLanguages(options);
+  if (!options.withSerena && serenaLanguages.length > 0) {
+    throw new Error('`--serena-language` requires `--with-serena`.');
+  }
+  if (!options.withSerena) return;
+  if (serenaLanguages.length === 0 || serenaLanguages.some((language) => language.length === 0)) {
+    throw new Error('`--with-serena` requires at least one `--serena-language <language>`.');
+  }
+  const serenaBin = options.serenaBin ?? process.env.GITNEXUS_SERENA_BIN;
+  if (!serenaBin || !path.isAbsolute(serenaBin)) {
+    throw new Error(
+      '`--with-serena` requires an absolute `--serena-bin` path (or GITNEXUS_SERENA_BIN).',
+    );
+  }
+};
+
+const getSerenaHome = (): string => {
+  const configuredSerenaHome = process.env.SERENA_HOME || path.join(os.homedir(), '.serena');
+  if (!path.isAbsolute(configuredSerenaHome)) {
+    throw new Error('SERENA_HOME must be an absolute path when `--with-serena` is used.');
+  }
+  try {
+    return realpathSync.native(configuredSerenaHome);
+  } catch {
+    // Initial setup legitimately creates this directory. Resolve it now so
+    // every worktree uses the same lock key rather than a cwd-relative one.
+    return path.resolve(configuredSerenaHome);
+  }
+};
+
+const isDirectory = (candidate: string): boolean => {
+  try {
+    return statSync(candidate).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+const resolveSerenaDataFolder = (worktreePath: string, configuredLocation: string): string => {
+  const replacements: Record<string, string> = {
+    projectDir: worktreePath,
+    projectFolderName: path.basename(worktreePath),
+  };
+  const substituted = configuredLocation.replace(/\$([A-Za-z_]\w*)/g, (placeholder, name) => {
+    const replacement = replacements[name];
+    if (replacement === undefined) {
+      throw new Error(
+        `Could not resolve Serena project data target: unsupported placeholder ${placeholder}.`,
+      );
+    }
+    return replacement;
+  });
+  const configuredPath = path.resolve(worktreePath, substituted);
+  const defaultPath = path.join(worktreePath, '.serena');
+
+  // Match Serena's documented fallback: prefer an existing configured path,
+  // then an existing in-project `.serena`, otherwise use the configured path
+  // that `serena project index` will create.
+  if (isDirectory(configuredPath)) return configuredPath;
+  if (!samePath(configuredPath, defaultPath) && isDirectory(defaultPath)) return defaultPath;
+  return configuredPath;
+};
+
+const getSerenaPlanTargets = (
+  worktreePath: string,
+  options: RefreshOptions,
+): RefreshWriteTarget[] => {
+  if (!options.withSerena) return [];
+
+  const serenaHome = getSerenaHome();
+  const configPath = path.join(serenaHome, 'serena_config.yml');
+  let configuredLocation = '$projectDir/.serena';
+  if (existsSync(configPath)) {
+    try {
+      const parsed = yaml.load(readFileSync(configPath, 'utf8'), {
+        schema: yaml.JSON_SCHEMA,
+      }) as Record<string, unknown> | undefined;
+      if (parsed && Object.hasOwn(parsed, 'project_serena_folder_location')) {
+        if (typeof parsed.project_serena_folder_location !== 'string') {
+          throw new Error('`project_serena_folder_location` must be a string.');
+        }
+        configuredLocation = parsed.project_serena_folder_location;
+      }
+    } catch (error: any) {
+      throw new Error(
+        `Could not read Serena configuration ${configPath}: ${error?.message ?? String(error)}`,
+      );
+    }
+  }
+  const projectDataPath = resolveSerenaDataFolder(worktreePath, configuredLocation);
+
+  return [
+    {
+      path: serenaHome,
+      purpose: 'Serena global home used for configuration and cross-worktree coordination',
+      willWrite: true,
+    },
+    {
+      path: configPath,
+      purpose: 'Serena global configuration and registered-project list',
+      willWrite: true,
+    },
+    {
+      path: path.join(serenaHome, SERENA_LOCK_FILE),
+      purpose: 'GitNexus cross-worktree Serena indexing lock',
+      willWrite: true,
+    },
+    {
+      path: projectDataPath,
+      purpose: 'Resolved Serena project data: project.yml, symbol caches, and indexing logs',
+      willWrite: true,
+    },
+    ...(samePath(projectDataPath, path.join(worktreePath, '.serena'))
+      ? []
+      : [
+          {
+            path: path.join(worktreePath, '.serena', 'logs', 'indexing.txt'),
+            purpose: 'Serena indexing failure log (only if indexing reports failed files)',
+            willWrite: true,
+          },
+        ]),
+  ];
+};
+
+export const getRefreshPlan = (worktreePath: string, options: RefreshOptions = {}): RefreshPlan => {
+  validateRefreshHome();
+  validateSerenaOptions(options);
+  const paths = getRefreshPaths(worktreePath);
+  const globalDir = getGlobalDir();
+  return {
+    worktreePath,
+    requiresWriteAccess: true,
+    coversOptionalSerena: Boolean(options.withSerena),
+    writeTargetsComplete: !options.withSerena,
+    ...(options.withSerena
+      ? {
+          externalWriteRisk:
+            'Serena project indexing starts an external executable and language servers. ' +
+            'The listed Serena paths are GitNexus-known targets, not an exhaustive list: ' +
+            'language-server or toolchain caches/install paths may also be written. ' +
+            'Require separate authority for those external writes before using --with-serena.',
+        }
+      : {}),
+    writeTargets: [
+      {
+        path: paths.storagePath,
+        purpose: 'Per-worktree graph index, metadata, and refresh state',
+        willWrite: true,
+      },
+      getGitExcludeTarget(worktreePath),
+      {
+        path: getAnalysisLockPath(worktreePath),
+        purpose: 'Per-worktree cross-process analysis lock',
+        willWrite: true,
+      },
+      {
+        path: getGlobalRegistryPath(),
+        purpose: 'Global repository registry',
+        willWrite: true,
+      },
+      {
+        path: getGlobalRegistryLockPath(),
+        purpose: 'Global registry transaction lock',
+        willWrite: true,
+      },
+      {
+        path: globalDir,
+        purpose: 'Global GitNexus home containing the registry and refresh locks',
+        willWrite: true,
+      },
+      ...(options.installGitHooks ? getGitHookInstallPlanTargets(worktreePath) : []),
+      ...getSerenaPlanTargets(worktreePath, options),
+    ],
   };
 };
 
@@ -401,6 +662,8 @@ const getGitHooksDirectory = (worktreePath: string): string => {
   return path.isAbsolute(raw) ? raw : path.resolve(worktreePath, raw);
 };
 
+const GIT_HOOK_EVENTS = ['post-commit', 'post-merge', 'post-rewrite', 'post-checkout'] as const;
+
 const isLinkedWorktree = (worktreePath: string): boolean => {
   try {
     const gitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], {
@@ -425,6 +688,161 @@ const isLinkedWorktree = (worktreePath: string): boolean => {
   } catch {
     return false;
   }
+};
+
+/**
+ * Snapshot the same hook-installation decisions as `installGitHooks` without
+ * creating a hooks directory or changing a wrapper. `refresh plan` needs this
+ * extra inspection because an existing non-GitNexus hook stops installation at
+ * that event, rather than being overwritten.
+ */
+const getGitHookInstallPlanTargets = (worktreePath: string): RefreshWriteTarget[] => {
+  const linkedWorktree = isLinkedWorktree(worktreePath);
+  let hooksPath: string;
+  try {
+    hooksPath = getGitHooksDirectory(worktreePath);
+  } catch (error: any) {
+    return [
+      {
+        path: path.join(worktreePath, '.git'),
+        purpose: `Git hook installation skipped: Git did not provide a hooks directory (${error?.message ?? String(error)}).`,
+        willWrite: false,
+      },
+    ];
+  }
+
+  if (linkedWorktree) {
+    return [
+      {
+        path: hooksPath,
+        purpose:
+          'Git hook installation skipped: linked worktree shares this hook directory with its primary checkout.',
+        willWrite: false,
+      },
+    ];
+  }
+
+  const configuredHooksPath = getConfiguredHooksPath(worktreePath);
+  const isHuskyDispatcher =
+    path.basename(hooksPath) === '_' && path.basename(path.dirname(hooksPath)) === '.husky';
+  if (configuredHooksPath && !isHuskyDispatcher) {
+    return [
+      {
+        path: hooksPath,
+        purpose: `Git hook installation skipped: core.hooksPath is configured as ${configuredHooksPath}; GitNexus will not overwrite an unknown dispatcher.`,
+        willWrite: false,
+      },
+    ];
+  }
+  if (isHuskyDispatcher) {
+    return [
+      {
+        path: hooksPath,
+        purpose: `Git hook installation skipped: core.hooksPath is Husky (${configuredHooksPath}); tracked .husky/post-* files are untouched.`,
+        willWrite: false,
+      },
+    ];
+  }
+
+  const cli = resolveCliInvocation();
+  if (!cli) {
+    return [
+      {
+        path: hooksPath,
+        purpose: 'Git hook installation skipped: GitNexus CLI entrypoint could not be resolved.',
+        willWrite: false,
+      },
+    ];
+  }
+
+  let hooksDirectoryExists = false;
+  try {
+    hooksDirectoryExists = statSync(hooksPath).isDirectory();
+    if (!hooksDirectoryExists) {
+      return [
+        {
+          path: hooksPath,
+          purpose:
+            'Git hook installation skipped: the resolved hooks path exists but is not a directory.',
+          willWrite: false,
+        },
+      ];
+    }
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') {
+      return [
+        {
+          path: hooksPath,
+          purpose: `Git hook installation skipped: could not inspect the resolved hooks directory (${error?.message ?? String(error)}).`,
+          willWrite: false,
+        },
+      ];
+    }
+  }
+
+  const targets: RefreshWriteTarget[] = [
+    {
+      path: hooksPath,
+      purpose: hooksDirectoryExists
+        ? 'Git hook directory already exists; no directory creation is needed'
+        : 'Git hook directory for GitNexus-managed stale-marker wrappers',
+      willWrite: !hooksDirectoryExists,
+    },
+  ];
+  let blockedBy: string | undefined;
+  for (const event of GIT_HOOK_EVENTS) {
+    const targetPath = path.join(hooksPath, event);
+    if (blockedBy) {
+      targets.push({
+        path: targetPath,
+        purpose: `Git hook installation skipped because ${blockedBy} blocks the managed wrapper set.`,
+        willWrite: false,
+      });
+      continue;
+    }
+
+    const expected = hookScript(event, cli);
+    let current: string | undefined;
+    try {
+      current = readFileSync(targetPath, 'utf8');
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') {
+        blockedBy = targetPath;
+        targets.push({
+          path: targetPath,
+          purpose: `Git hook installation skipped: could not inspect an existing hook (${error?.message ?? String(error)}).`,
+          willWrite: false,
+        });
+        continue;
+      }
+    }
+
+    if (current === undefined) {
+      targets.push({
+        path: targetPath,
+        purpose: `GitNexus-managed ${event} stale-marker wrapper`,
+        willWrite: true,
+      });
+      continue;
+    }
+    if (current === expected) {
+      targets.push({
+        path: targetPath,
+        purpose: `GitNexus-managed ${event} wrapper already matches; no write is needed`,
+        willWrite: false,
+      });
+      continue;
+    }
+
+    blockedBy = targetPath;
+    targets.push({
+      path: targetPath,
+      purpose:
+        'Git hook installation skipped: existing hook does not exactly match the GitNexus-managed wrapper and will not be overwritten.',
+      willWrite: false,
+    });
+  }
+  return targets;
 };
 
 /**
@@ -474,10 +892,9 @@ export const installGitHooks = async (worktreePath: string): Promise<HookInstall
     };
   }
   await fs.mkdir(targetDirectory, { recursive: true });
-  const events = ['post-commit', 'post-merge', 'post-rewrite', 'post-checkout'];
   const installed: string[] = [];
 
-  for (const event of events) {
+  for (const event of GIT_HOOK_EVENTS) {
     const targetPath = path.join(targetDirectory, event);
     const expected = hookScript(event, cli);
     let current: string | undefined;
@@ -507,35 +924,17 @@ const runSerenaInitialization = async (
   worktreePath: string,
   options: RefreshOptions,
 ): Promise<void> => {
-  const serenaLanguages = (options.serenaLanguage ?? options.serenaLanguages ?? []).map(
-    (language) => language.trim(),
-  );
-  if (serenaLanguages.length === 0 || serenaLanguages.some((language) => language.length === 0)) {
-    throw new Error('`--with-serena` requires at least one `--serena-language <language>`.');
-  }
+  validateSerenaOptions(options);
+  const serenaLanguages = getSerenaLanguages(options);
   const serenaBin = options.serenaBin ?? process.env.GITNEXUS_SERENA_BIN;
-  if (!serenaBin || !path.isAbsolute(serenaBin)) {
-    throw new Error(
-      '`--with-serena` requires an absolute `--serena-bin` path (or GITNEXUS_SERENA_BIN).',
-    );
-  }
+  // validateSerenaOptions guarantees this is an absolute path.
+  if (!serenaBin) throw new Error('Serena executable is not configured.');
   try {
     await fs.access(serenaBin);
   } catch {
     throw new Error(`Serena executable does not exist: ${serenaBin}`);
   }
-  const configuredSerenaHome = process.env.SERENA_HOME || path.join(os.homedir(), '.serena');
-  if (!path.isAbsolute(configuredSerenaHome)) {
-    throw new Error('SERENA_HOME must be an absolute path when `--with-serena` is used.');
-  }
-  let serenaHome: string;
-  try {
-    serenaHome = await fs.realpath(configuredSerenaHome);
-  } catch {
-    // The initial setup legitimately creates this directory; resolve it now
-    // so all worktrees use one stable lock key rather than a cwd-relative one.
-    serenaHome = path.resolve(configuredSerenaHome);
-  }
+  const serenaHome = getSerenaHome();
   await withFileLock(path.join(serenaHome, SERENA_LOCK_FILE), async () => {
     await new Promise<void>((resolve, reject) => {
       const child = spawn(
@@ -669,12 +1068,9 @@ const initialize = async (
   worktreePath: string,
   options: RefreshOptions,
 ): Promise<RefreshStatus> => {
-  if (
-    !options.withSerena &&
-    (options.serenaLanguage?.length ?? options.serenaLanguages?.length ?? 0) > 0
-  ) {
-    throw new Error('`--serena-language` requires `--with-serena`.');
-  }
+  // Validate every optional Serena argument before `init` creates any graph
+  // coordinator state. A caller can inspect the same contract via `plan`.
+  validateSerenaOptions(options);
   let state: RefreshState;
   await withStateLock(worktreePath, async () => {
     state = await ensureState(worktreePath, options.alias);
@@ -757,6 +1153,11 @@ const ensure = async (worktreePath: string, options: RefreshOptions): Promise<Re
         // force the pipeline whenever the coordinator observed a marker.
         force: Boolean(options.force || markerSnapshot.length > 0),
         indexOnly: true,
+        // A coordinator refresh may load a pre-installed FTS extension, but
+        // it must never spawn DuckDB INSTALL or populate external extension
+        // caches/network state. Direct `gitnexus analyze` retains `auto`.
+        extensionInstallPolicy: 'load-only',
+        suppressEmbeddingGeneration: true,
         // A detached, demand-driven refresh must remain reliable even when a
         // native tree-sitter worker is terminated for an idle-timeout retry.
         // Keep this explicit at the coordinator boundary; direct `analyze`
@@ -818,12 +1219,13 @@ const request = async (worktreePath: string, options: RefreshOptions): Promise<R
 
 export const refreshCommand = async (actionInput: string, options: RefreshOptions = {}) => {
   const action = actionInput as RefreshAction;
-  if (!['init', 'mark', 'status', 'ensure', 'request'].includes(action)) {
-    console.error('Unknown refresh action. Use one of: init, mark, status, ensure, request.');
+  if (!['init', 'mark', 'status', 'plan', 'ensure', 'request'].includes(action)) {
+    console.error('Unknown refresh action. Use one of: init, mark, status, plan, ensure, request.');
     process.exitCode = 1;
     return;
   }
   try {
+    validateRefreshHome();
     if (action === 'ensure' && !process.env.GITNEXUS_REFRESH_HEAP_READY && ensureAnalysisHeap()) {
       return;
     }
@@ -837,6 +1239,9 @@ export const refreshCommand = async (actionInput: string, options: RefreshOption
         return;
       case 'status':
         print(await getRefreshStatus(worktreePath), options);
+        return;
+      case 'plan':
+        print(getRefreshPlan(worktreePath, options), options);
         return;
       case 'ensure':
         await ensure(worktreePath, options);

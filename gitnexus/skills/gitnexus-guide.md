@@ -15,7 +15,7 @@ For any task involving code understanding, debugging, impact analysis, or refact
 2. **Match your task to a skill below** and **read that skill file**
 3. **Follow the skill's workflow and checklist**
 
-> In a multi-worktree session, pass `repo` to each graph tool as the absolute worktree path. The Codex freshness gate rejects aliases. If a graph tool reports a stale or missing index, run `gitnexus refresh ensure --path <absolute-worktree>`, then retry. `detect_changes` is not freshness-gated.
+> In a multi-worktree session, pass `repo` to each graph tool as the absolute worktree path. The Codex freshness gate rejects aliases and never starts a refresh. If a graph tool reports a stale or missing index, inspect `gitnexus refresh status --path <absolute-worktree>` then read-only `gitnexus refresh plan --path <absolute-worktree>`. `init` / `ensure` write `.gitnexus/`, applicable Git metadata, and `GITNEXUS_HOME`; run them only with authority for every GitNexus target, then retry. Otherwise use stale results with a warning, `detect_changes`, and source. `detect_changes` is not freshness-gated.
 
 ## Skills
 

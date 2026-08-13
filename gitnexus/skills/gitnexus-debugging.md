@@ -22,7 +22,7 @@ description: 'Use when the user is debugging a bug, tracing an error, or asking 
 4. gitnexus_cypher({query: "MATCH path...", repo: "<absolute-worktree>"})                 → Custom traces if needed
 ```
 
-> In a multi-worktree session, graph calls require `repo` as the absolute worktree path. The Codex freshness gate rejects aliases. If a graph call is stale or missing, run `gitnexus refresh ensure --path <absolute-worktree>`, then retry. `detect_changes` is not freshness-gated.
+> In a multi-worktree session, graph calls require `repo` as the absolute worktree path. The Codex freshness gate rejects aliases and never starts a refresh. If a graph call is stale or missing, inspect `gitnexus refresh status --path <absolute-worktree>` then read-only `gitnexus refresh plan --path <absolute-worktree>`. `init` / `ensure` write `.gitnexus/`, applicable Git metadata, and `GITNEXUS_HOME`; run them only with authority for every GitNexus target, then retry. Otherwise use stale results with a warning, `detect_changes`, and source. `detect_changes` is not freshness-gated.
 
 ## Checklist
 

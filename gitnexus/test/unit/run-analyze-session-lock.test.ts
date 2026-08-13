@@ -227,11 +227,86 @@ describe('runFullAnalysis process-local LadybugDB session', () => {
       undefined,
     );
 
+    // The coordinator's extension-install boundary must cover both writable
+    // LadybugDB lifecycles: an existing index opened to preserve embeddings
+    // and the temporary database that receives the rebuilt graph. This test
+    // has no existing metadata, so it observes the latter directly.
+    expect(initLbugMock).toHaveBeenNthCalledWith(
+      1,
+      `${firstWorktree}/.gitnexus/lbug.tmp`,
+      undefined,
+    );
+    expect(initLbugMock).toHaveBeenNthCalledWith(
+      2,
+      `${secondWorktree}/.gitnexus/lbug.tmp`,
+      undefined,
+    );
+
     expect(openedNativePaths).toEqual([
       `${firstWorktree}/.gitnexus/lbug.tmp`,
       `${secondWorktree}/.gitnexus/lbug.tmp`,
     ]);
     expect(maxConcurrentNativeSessions).toBe(1);
     expect(nativeSessionOpen).toBe(false);
+  });
+
+  it('passes load-only to both cached and temporary LadybugDB opens for a coordinator refresh', async () => {
+    vi.clearAllMocks();
+
+    const worktree = '/worktrees/coordinator';
+    withAnalysisLockMock.mockImplementation(
+      async (_repoPath: string, callback: () => Promise<unknown>) => callback(),
+    );
+    getStoragePathsMock.mockReturnValue({
+      storagePath: `${worktree}/.gitnexus`,
+      lbugPath: `${worktree}/.gitnexus/lbug`,
+    });
+    createTempLbugPathMock.mockReturnValue(`${worktree}/.gitnexus/lbug.tmp`);
+    cleanupOldKuzuFilesMock.mockResolvedValue({ found: false, needsReindex: false });
+    loadMetaMock.mockResolvedValue({
+      repoPath: worktree,
+      lastCommit: 'old-commit',
+      stats: { embeddings: 1 },
+    });
+    getIndexHealthMock.mockResolvedValue({ ok: true });
+    hasGitDirMock.mockReturnValue(true);
+    getCurrentCommitMock.mockReturnValue('new-commit');
+    getInferredRepoNameMock.mockReturnValue('coordinator');
+    runPipelineFromRepoMock.mockResolvedValue({ graph: {}, repoPath: worktree, totalFileCount: 1 });
+    loadCachedEmbeddingsMock.mockResolvedValue({ embeddingNodeIds: new Set(), embeddings: [] });
+    loadGraphToLbugMock.mockResolvedValue(undefined);
+    createSearchFTSIndexesMock.mockResolvedValue(undefined);
+    getLbugStatsMock.mockResolvedValue({ nodes: 0, edges: 0 });
+    executeQueryMock.mockResolvedValue([]);
+    getRuntimeCapabilitiesMock.mockReturnValue({
+      graph: 'available',
+      fts: 'unavailable',
+      semanticMode: 'exact-scan',
+      exactScanLimit: 1_000,
+    });
+    registerRepoMock.mockResolvedValue('coordinator');
+    ensureGitNexusIgnoredMock.mockResolvedValue(undefined);
+    saveMetaMock.mockResolvedValue(undefined);
+    cleanupLbugArtifactsMock.mockResolvedValue(undefined);
+    cleanupTempLbugArtifactsMock.mockResolvedValue(undefined);
+    createAnalysisIncompleteMarkerMock.mockResolvedValue(undefined);
+    clearAnalysisIncompleteMarkerMock.mockResolvedValue(undefined);
+    promoteLbugDatabaseMock.mockResolvedValue(undefined);
+    closeLbugMock.mockResolvedValue(undefined);
+    initLbugMock.mockResolvedValue(undefined);
+
+    const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+    await runFullAnalysis(
+      worktree,
+      { force: true, suppressEmbeddingGeneration: true, extensionInstallPolicy: 'load-only' },
+      { onProgress: () => {} },
+    );
+
+    expect(initLbugMock).toHaveBeenNthCalledWith(1, `${worktree}/.gitnexus/lbug`, {
+      extensionInstallPolicy: 'load-only',
+    });
+    expect(initLbugMock).toHaveBeenNthCalledWith(2, `${worktree}/.gitnexus/lbug.tmp`, {
+      extensionInstallPolicy: 'load-only',
+    });
   });
 });

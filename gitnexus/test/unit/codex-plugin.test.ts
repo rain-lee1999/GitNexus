@@ -19,15 +19,17 @@ const hook = require(path.join(pluginRoot, 'hooks', 'gitnexus-hook.cjs')) as {
   extractSearchPattern(command: string): string | null;
   gitMutationTarget(command: string, cwd: string): { verb: string; cwd: string } | null;
   gitMutationVerb(command: string): string | null;
-  handleGraphToolPreUse(input: Record<string, unknown>): void;
   handlePostToolUse(input: Record<string, unknown>): void;
-  isGatedGraphTool(toolName: string): boolean;
   parseRefreshStatus(result: { stdout?: string } | null): Record<string, unknown> | null;
   runGitNexus(
     args: string[],
     cwd: string,
     timeoutMs: number,
   ): { status: number | null; stdout?: string; error?: Error } | null;
+};
+const graphGate = require(path.join(pluginRoot, 'hooks', 'gitnexus-graph-gate.cjs')) as {
+  handleGraphToolPreUse(input: Record<string, unknown>): void;
+  isGatedGraphTool(toolName: string): boolean;
 };
 const gitHook = require(path.join(pluginRoot, 'hooks', 'gitnexus-git-hook.cjs')) as {
   cliLaunch(
@@ -128,10 +130,6 @@ if (args[0] === 'refresh' && args[1] === 'status') {
   process.exit(Number(process.env.GITNEXUS_TEST_REFRESH_STATUS_CODE || '0'));
 }
 if (args[0] === 'refresh' && args[1] === 'mark') process.exit(0);
-if (args[0] === 'refresh' && args[1] === 'request') {
-  process.stdout.write(JSON.stringify({ requestState: 'queued' }));
-  process.exit(0);
-}
 process.exit(1);
 `,
     'utf8',
@@ -173,6 +171,37 @@ async function loadCachedPluginHook(directory: string) {
   return {
     cachedPluginRoot,
     hook: require(cachedHookPath) as typeof hook,
+  };
+}
+
+async function loadCachedGraphGate(directory: string) {
+  const cachedPluginRoot = path.join(
+    directory,
+    'plugin-cache',
+    'gitnexus',
+    '1.6.3',
+    'codex-plugin',
+  );
+  const cachedHooksDirectory = path.join(cachedPluginRoot, 'hooks');
+  const cachedHookPath = path.join(cachedHooksDirectory, 'gitnexus-hook.cjs');
+  const cachedGatePath = path.join(cachedHooksDirectory, 'gitnexus-graph-gate.cjs');
+  await mkdir(cachedHooksDirectory, { recursive: true });
+  await Promise.all([
+    writeFile(
+      cachedHookPath,
+      await readFile(path.join(pluginRoot, 'hooks', 'gitnexus-hook.cjs'), 'utf8'),
+      'utf8',
+    ),
+    writeFile(
+      cachedGatePath,
+      await readFile(path.join(pluginRoot, 'hooks', 'gitnexus-graph-gate.cjs'), 'utf8'),
+      'utf8',
+    ),
+  ]);
+
+  return {
+    cachedPluginRoot,
+    gate: require(cachedGatePath) as typeof graphGate,
   };
 }
 
@@ -273,6 +302,10 @@ describe('Codex plugin bundle', () => {
   it('uses narrow graph-query gates alongside advisory Bash hooks', async () => {
     const hooks = await readJson<HooksManifest>('hooks/hooks.json');
     const script = await readFile(path.join(pluginRoot, 'hooks', 'gitnexus-hook.cjs'), 'utf8');
+    const graphGateScript = await readFile(
+      path.join(pluginRoot, 'hooks', 'gitnexus-graph-gate.cjs'),
+      'utf8',
+    );
     const gitHookScript = await readFile(
       path.join(pluginRoot, 'hooks', 'gitnexus-git-hook.cjs'),
       'utf8',
@@ -284,6 +317,11 @@ describe('Codex plugin bundle', () => {
     expect(hooks.hooks.PreToolUse[1]).toMatchObject({
       matcher:
         '^mcp__gitnexus__(query|cypher|context|impact|route_map|tool_map|shape_check|api_impact)$',
+      hooks: [
+        expect.objectContaining({
+          command: expect.stringContaining('gitnexus-graph-gate.cjs'),
+        }),
+      ],
     });
     expect(hooks.hooks.PostToolUse).toEqual([expect.objectContaining({ matcher: '^Bash$' })]);
     for (const entry of [...hooks.hooks.PreToolUse, ...hooks.hooks.PostToolUse]) {
@@ -298,10 +336,16 @@ describe('Codex plugin bundle', () => {
     expect(script).toContain('input.tool_response');
     expect(script).not.toContain('input.tool_output');
     expect(script).toContain('hookSpecificOutput');
-    expect(script).toContain("permissionDecision: 'deny'");
-    expect(script).toContain("['refresh', 'status'");
+    expect(script).toContain('Shared only with gitnexus-graph-gate.cjs');
     expect(script).toContain("['refresh', 'mark'");
+    expect(graphGateScript).toContain("['refresh', 'status'");
+    expect(graphGateScript).toContain("permissionDecision: 'deny'");
+    expect(graphGateScript).not.toContain("['refresh', 'request'");
+    expect(graphGateScript).not.toContain("['refresh', 'ensure'");
+    expect(graphGateScript).toContain('did not start or queue a refresh');
+    expect(graphGateScript).toContain('$GITNEXUS_HOME');
     expect(script).not.toContain('npx');
+    expect(graphGateScript).not.toContain('npx');
     expect(gitHookScript).not.toContain('npx');
   });
 
@@ -349,11 +393,11 @@ describe('Codex hook behavior', () => {
     expect(await readRefreshCalls(logPath)).toEqual([['refresh', 'status', '--json']]);
   });
 
-  it('fails closed without repo pollution when a cached plugin cannot find GitNexus on PATH', async () => {
+  it('fails closed without repo pollution when a cached graph gate cannot find GitNexus on PATH', async () => {
     const directory = await mkdtemp(path.join(tmpdir(), 'gitnexus-codex-cache-missing-cli-'));
     temporaryDirectories.push(directory);
     execFileSync('git', ['init', '-q'], { cwd: directory });
-    const { hook: cachedHook } = await loadCachedPluginHook(directory);
+    const { gate: cachedGate } = await loadCachedGraphGate(directory);
     const binDirectory = path.join(directory, 'bin-without-gitnexus');
     await mkdir(binDirectory, { recursive: true });
     await addGitToPath(binDirectory);
@@ -366,7 +410,7 @@ describe('Codex hook behavior', () => {
       return true;
     }) as typeof process.stdout.write);
 
-    cachedHook.handleGraphToolPreUse({
+    cachedGate.handleGraphToolPreUse({
       hook_event_name: 'PreToolUse',
       tool_name: 'mcp__gitnexus__query',
       cwd: directory,
@@ -552,7 +596,7 @@ describe('Codex hook behavior', () => {
     expect(JSON.parse(writes[0])).toMatchObject({
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
-        additionalContext: expect.stringContaining('gitnexus refresh'),
+        additionalContext: expect.stringContaining('does not authorize a refresh'),
       },
     });
     expect(await readRefreshCalls(logPath)).toEqual([
@@ -578,7 +622,7 @@ describe('Codex hook behavior', () => {
     expect(await readRefreshCalls(logPath)).toHaveLength(1);
   });
 
-  it('fails closed for a stale graph query, queues a refresh, and never runs ensure or analyze', async () => {
+  it('fails closed for a stale graph query after status only, without queuing or running refresh', async () => {
     const directory = await mkdtemp(path.join(tmpdir(), 'gitnexus-codex-gate-'));
     temporaryDirectories.push(directory);
     execFileSync('git', ['init', '-q'], { cwd: directory });
@@ -600,7 +644,7 @@ describe('Codex hook behavior', () => {
       return true;
     }) as typeof process.stdout.write);
 
-    hook.handleGraphToolPreUse({
+    graphGate.handleGraphToolPreUse({
       hook_event_name: 'PreToolUse',
       tool_name: 'mcp__gitnexus__impact',
       cwd: directory,
@@ -617,17 +661,15 @@ describe('Codex hook behavior', () => {
       },
     });
     const calls = await readRefreshCalls(logPath);
+    expect(JSON.parse(writes[0])).toMatchObject({
+      hookSpecificOutput: {
+        additionalContext: expect.stringContaining('did not start or queue a refresh'),
+      },
+    });
     expect(calls).toEqual([
       expect.arrayContaining(['refresh', 'status', '--path', canonicalDirectory, '--json']),
-      expect.arrayContaining([
-        'refresh',
-        'request',
-        '--path',
-        canonicalDirectory,
-        '--reason',
-        'mcp-graph-request',
-      ]),
     ]);
+    expect(calls.flat()).not.toContain('request');
     expect(calls.flat()).not.toContain('ensure');
     expect(calls.flat()).not.toContain('analyze');
   });
@@ -651,7 +693,7 @@ describe('Codex hook behavior', () => {
       return true;
     }) as typeof process.stdout.write);
 
-    hook.handleGraphToolPreUse({
+    graphGate.handleGraphToolPreUse({
       hook_event_name: 'PreToolUse',
       tool_name: 'mcp__gitnexus__context',
       cwd: directory,
@@ -662,11 +704,11 @@ describe('Codex hook behavior', () => {
     expect(await readRefreshCalls(logPath)).toEqual([
       expect.arrayContaining(['refresh', 'status', '--path', canonicalDirectory, '--json']),
     ]);
-    expect(hook.isGatedGraphTool('mcp__gitnexus__detect_changes')).toBe(false);
-    expect(hook.isGatedGraphTool('mcp__gitnexus__list_repos')).toBe(false);
-    expect(hook.isGatedGraphTool('mcp__gitnexus__group_list')).toBe(false);
-    expect(hook.isGatedGraphTool('mcp__gitnexus__rename')).toBe(false);
-    expect(hook.isGatedGraphTool('mcp__gitnexus__group_sync')).toBe(false);
+    expect(graphGate.isGatedGraphTool('mcp__gitnexus__detect_changes')).toBe(false);
+    expect(graphGate.isGatedGraphTool('mcp__gitnexus__list_repos')).toBe(false);
+    expect(graphGate.isGatedGraphTool('mcp__gitnexus__group_list')).toBe(false);
+    expect(graphGate.isGatedGraphTool('mcp__gitnexus__group_sync')).toBe(false);
+    expect(graphGate.isGatedGraphTool('mcp__gitnexus__rename')).toBe(false);
     expect(hook.parseRefreshStatus({ stdout: '{"refreshRequired":false}' })).toEqual({
       refreshRequired: false,
     });
@@ -686,7 +728,7 @@ describe('Codex hook behavior', () => {
       return true;
     }) as typeof process.stdout.write);
 
-    hook.handleGraphToolPreUse({
+    graphGate.handleGraphToolPreUse({
       hook_event_name: 'PreToolUse',
       tool_name: 'mcp__gitnexus__query',
       cwd: directory,
@@ -718,7 +760,7 @@ describe('Codex hook behavior', () => {
       return true;
     }) as typeof process.stdout.write);
 
-    hook.handleGraphToolPreUse({
+    graphGate.handleGraphToolPreUse({
       hook_event_name: 'PreToolUse',
       tool_name: 'mcp__gitnexus__query',
       cwd: directory,

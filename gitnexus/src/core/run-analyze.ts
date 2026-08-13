@@ -20,6 +20,7 @@ import {
   closeLbug,
   loadCachedEmbeddings,
 } from './lbug/lbug-adapter.js';
+import type { ExtensionInstallPolicy } from './lbug/extension-loader.js';
 import { createSearchFTSIndexes } from './search/fts-indexes.js';
 import {
   getStoragePaths,
@@ -81,6 +82,20 @@ export interface AnalyzeOptions {
    * instruction assets (AGENTS.md or .agents/skills).
    */
   indexOnly?: boolean;
+  /**
+   * Keep a coordinator refresh within its declared local graph/registry
+   * write surface. It preserves existing vectors but never invokes an
+   * embedding provider or model cache to top up changed nodes.
+   */
+  suppressEmbeddingGeneration?: boolean;
+  /**
+   * Restrict optional LadybugDB extension lifecycle for this analysis. The
+   * refresh coordinator uses `load-only` so a graph rebuild never spawns an
+   * extension installer or populates external extension caches; direct
+   * `analyze` intentionally leaves this undefined and keeps the `auto`
+   * default.
+   */
+  extensionInstallPolicy?: ExtensionInstallPolicy;
   /**
    * Force the ingestion pipeline to parse sequentially instead of creating a
    * `worker_threads` pool. This is an explicit caller-level safety control:
@@ -236,6 +251,13 @@ async function runFullAnalysisUnlocked(
 
   const { storagePath, lbugPath } = getStoragePaths(repoPath);
   const contextName = getContextProjectName(repoPath, options.registryName);
+  // Keep the restriction with every writable LadybugDB lifecycle in this
+  // analysis, including the existing-index embedding cache read before the
+  // temporary rebuild database is opened.
+  const lbugInitOptions =
+    options.extensionInstallPolicy === undefined
+      ? undefined
+      : { extensionInstallPolicy: options.extensionInstallPolicy };
 
   // Clean up stale KuzuDB files from before the LadybugDB migration.
   const kuzuResult = await cleanupOldKuzuFiles(storagePath);
@@ -318,7 +340,7 @@ async function runFullAnalysisUnlocked(
   if (shouldLoadCache && existingMeta) {
     try {
       progress('embeddings', 0, 'Caching embeddings...');
-      await initLbug(lbugPath);
+      await initLbug(lbugPath, lbugInitOptions);
       const cached = await loadCachedEmbeddings();
       cachedEmbeddingNodeIds = cached.embeddingNodeIds;
       cachedEmbeddings = cached.embeddings;
@@ -366,7 +388,7 @@ async function runFullAnalysisUnlocked(
   const tempLbugPath = createTempLbugPath(storagePath);
   await cleanupLbugArtifacts(tempLbugPath);
 
-  await initLbug(tempLbugPath);
+  await initLbug(tempLbugPath, lbugInitOptions);
   try {
     // All work after initLbug is wrapped in try/finally to ensure closeLbug()
     // is called even if an error occurs — the module-level singleton DB handle

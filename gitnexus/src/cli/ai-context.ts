@@ -171,7 +171,7 @@ ${GITNEXUS_CONTEXT_VERSION_MARKER}
 
 This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}. Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-> Graph stale/missing: the Codex gate queues an index-only refresh and denies this call. Retry, or run \`gitnexus refresh ensure --path <absolute-worktree>\`. Gated graph tools require the absolute worktree path in \`repo\`; aliases are rejected. \`detect_changes\` is not freshness-gated.
+> Graph stale/missing: \`status\` → read-only \`plan\` → only with writable targets/scoped approval \`gitnexus refresh ensure --path <absolute-worktree>\`. Index-only writes \`.gitnexus/\`, Git metadata, and \`GITNEXUS_HOME\`; else stale graph + source. Use absolute \`repo\`. \`detect_changes\` is not freshness-gated.
 
 ## Always Do
 

@@ -16,15 +16,11 @@ const { spawnSync } = require('node:child_process');
 
 const MAX_PATTERN_LENGTH = 200;
 const MAX_CONTEXT_LENGTH = 12_000;
-// The graph gate itself has a 10s Codex timeout. Keep its worst-case path
-// (git root + status + request) below that budget; a hook must never time out
-// before it can emit its fail-closed decision.
+// Shared with the exact graph-gate entrypoint. The Bash hook never invokes
+// this status path because its manifest matcher is strictly `^Bash$`.
 const REFRESH_STATUS_TIMEOUT_MS = 2_500;
-const REFRESH_REQUEST_TIMEOUT_MS = 2_500;
 const REFRESH_MARK_TIMEOUT_MS = 4_000;
 
-// Keep this list in sync with hooks.json. It intentionally excludes
-// list_repos, detect_changes, group_list, and every mutating MCP tool.
 const GATED_GRAPH_TOOL_NAMES = new Set([
   'mcp__gitnexus__query',
   'mcp__gitnexus__cypher',
@@ -219,6 +215,7 @@ function sendAdditionalContext(eventName, message) {
   );
 }
 
+/** Shared only with gitnexus-graph-gate.cjs, which owns the MCP matcher. */
 function sendGraphGateDeny(reason, message) {
   const boundedReason = String(reason).slice(0, MAX_CONTEXT_LENGTH);
   const boundedMessage = String(message).slice(0, MAX_CONTEXT_LENGTH);
@@ -256,8 +253,10 @@ function shellQuote(value) {
 function refreshInstruction(worktreePath) {
   const quotedPath = shellQuote(worktreePath);
   return (
-    `Run \`gitnexus refresh init --path ${quotedPath}\` once if this worktree is new, then ` +
-    `\`gitnexus refresh ensure --path ${quotedPath}\`, and retry the graph query.`
+    `First inspect \`gitnexus refresh status --path ${quotedPath}\` and read-only ` +
+    `\`gitnexus refresh plan --path ${quotedPath}\`. \`init\` / \`ensure\` can write ` +
+    `the worktree .gitnexus/, applicable Git metadata, and $GITNEXUS_HOME; run them only ` +
+    `with authority for every GitNexus target or scoped approval, then retry the graph query.`
   );
 }
 
@@ -273,21 +272,10 @@ function markStale(worktreePath, reason) {
   }
 }
 
-// The request action detaches a coordinator-owned `ensure` process. It is
-// intentionally quick: the Hook never performs an index rebuild itself and
-// still denies this particular graph call until the refreshed graph exists.
-function requestRefresh(worktreePath, reason) {
-  try {
-    return runGitNexus(
-      ['refresh', 'request', '--path', worktreePath, '--reason', reason, '--json'],
-      worktreePath,
-      REFRESH_REQUEST_TIMEOUT_MS,
-    );
-  } catch {
-    return null;
-  }
-}
-
+/**
+ * Resolve the only safe identity for a graph query. This function is read-only
+ * and used by the separate MCP gate; aliases deliberately remain rejected.
+ */
 function resolveGraphWorktree(input) {
   const cwd = typeof input.cwd === 'string' ? input.cwd : '';
   const currentWorktree = worktreeRoot(cwd);
@@ -326,82 +314,6 @@ function resolveGraphWorktree(input) {
     return { error: `The requested GitNexus repo path is not an absolute Git worktree: ${repo}` };
   }
   return { worktreePath: requestedWorktree };
-}
-
-function graphGateMessage(worktreePath, reason, requestState, cliUnavailable) {
-  const queueMessage =
-    requestState === 'queued'
-      ? 'The hook requested a coordinator-owned background refresh; it did not run analyze itself. '
-      : requestState === 'already-queued'
-        ? 'A coordinator-owned background refresh is already pending; the hook did not run analyze itself. '
-        : cliUnavailable
-          ? 'The hook could not queue a background refresh because no usable local GitNexus CLI was found. ' +
-            'Set `GITNEXUS_CLI` to an absolute executable path or put `gitnexus` on PATH, then retry. '
-          : 'The hook could not queue a background refresh before its deadline (it may already be busy). ' +
-            'Run the synchronous refresh command below, then retry. ';
-  const retryMessage =
-    requestState === 'queued' || requestState === 'already-queued'
-      ? 'Retry after it completes, or '
-      : 'Run ';
-  return (
-    `GitNexus blocked this graph query: ${reason} ` +
-    queueMessage +
-    `${retryMessage}${refreshInstruction(worktreePath)} ` +
-    '`detect_changes` is intentionally not gated and remains available for working-tree diffs.'
-  );
-}
-
-function handleGraphToolPreUse(input) {
-  if (!isGatedGraphTool(input.tool_name)) return;
-
-  const target = resolveGraphWorktree(input);
-  if (target.error) {
-    sendGraphGateDeny(target.error, `GitNexus graph query blocked. ${target.error}`);
-    return;
-  }
-
-  let statusResult;
-  try {
-    statusResult = runGitNexus(
-      ['refresh', 'status', '--path', target.worktreePath, '--json'],
-      target.worktreePath,
-      REFRESH_STATUS_TIMEOUT_MS,
-    );
-  } catch {
-    statusResult = null;
-  }
-  const status = parseRefreshStatus(statusResult);
-
-  const isFresh = statusResult?.status === 0 && status?.refreshRequired === false;
-  if (isFresh) return;
-
-  // `request` owns the demand refresh and makes a stale marker unnecessary
-  // here. History hooks still record markers independently. Avoid doing two
-  // synchronous CLI calls after status: the graph gate must emit its deny
-  // response within Codex's hook timeout.
-  const requestResult = requestRefresh(target.worktreePath, 'mcp-graph-request');
-  const requestStatus = parseRefreshStatus(requestResult);
-  const requestState =
-    requestResult?.status === 0 &&
-    (requestStatus?.requestState === 'queued' || requestStatus?.requestState === 'already-queued')
-      ? requestStatus.requestState
-      : undefined;
-  const cliUnavailable = Boolean(
-    requestStatus?.requestState === 'unavailable' ||
-    !requestResult ||
-    requestResult.error?.code === 'ENOENT' ||
-    requestResult.error?.code === 'EACCES',
-  );
-
-  const reason =
-    (typeof status?.reason === 'string' && status.reason) ||
-    (status
-      ? 'the worktree index requires refresh'
-      : 'freshness could not be verified (refresh status returned no valid JSON)');
-  sendGraphGateDeny(
-    reason,
-    graphGateMessage(target.worktreePath, reason, requestState, cliUnavailable),
-  );
 }
 
 function handlePreToolUse(input) {
@@ -502,19 +414,15 @@ function handlePostToolUse(input) {
     markFailed
       ? `GitNexus could not record a stale marker after git ${mutation.verb}. Graph queries will fail closed ` +
           `until freshness is verified. ${refreshInstruction(root)}`
-      : `GitNexus marked this worktree stale after git ${mutation.verb}. Graph queries will be gated until ` +
-          `\`gitnexus refresh ensure --path ${shellQuote(root)}\` completes; ` +
-          '`detect_changes` remains available for working-tree diffs.',
+      : `GitNexus marked this worktree stale after git ${mutation.verb}. The marker does not authorize a refresh. ` +
+          `${refreshInstruction(root)} \`detect_changes\` remains available for working-tree diffs.`,
   );
 }
 
 function main() {
   try {
     const input = readInput();
-    if (input.hook_event_name === 'PreToolUse') {
-      handlePreToolUse(input);
-      handleGraphToolPreUse(input);
-    }
+    if (input.hook_event_name === 'PreToolUse') handlePreToolUse(input);
     if (input.hook_event_name === 'PostToolUse') handlePostToolUse(input);
   } catch (error) {
     if (process.env.GITNEXUS_DEBUG) {
@@ -529,7 +437,6 @@ module.exports = {
   findIndex,
   gitMutationTarget,
   gitMutationVerb,
-  handleGraphToolPreUse,
   handlePostToolUse,
   handlePreToolUse,
   isGatedGraphTool,

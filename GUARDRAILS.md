@@ -30,8 +30,8 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 ### Stale graph after edits
 
 - **Trigger:** MCP warns index is behind `HEAD`, or search doesn't match latest commit.
-- **Do:** `gitnexus refresh ensure --path <absolute-worktree>`; it can create the first graph index. Initialize each worktree once with `gitnexus refresh init --path <absolute-worktree>`; add `--install-git-hooks` only in a primary checkout using conventional hooks. Use direct `analyze` only when managed AGENTS/skills, embeddings, or an explicit full repair is needed.
-- **Why:** The coordinator serializes one graph writer per worktree and uses index-only mode, so routine freshness does not rewrite agent assets or race another Codex session.
+- **Do:** Run `gitnexus refresh status --path <absolute-worktree>`, then read-only `gitnexus refresh plan --path <absolute-worktree>`. Only when every listed target is writable or a scoped approval covers it, run `gitnexus refresh init` (once per worktree) and `gitnexus refresh ensure`; add `--install-git-hooks` only in a primary checkout using conventional hooks. Without that authority, use the stale graph only with a warning, plus `detect_changes` and source inspection. Use direct `analyze` only for managed AGENTS/skills, embeddings, or an explicit full repair.
+- **Why:** `index-only` avoids regenerating agent assets but still writes `.gitnexus/`, applicable Git metadata, and `GITNEXUS_HOME`. The coordinator serializes one writer per worktree; it cannot infer or obtain sandbox authority.
 
 ### Embeddings vanished after analyze
 

@@ -90,7 +90,7 @@ program
 
 program
   .command('refresh <action>')
-  .description('Coordinate worktree-safe index-only graph refreshes')
+  .description('Inspect or coordinate worktree-safe index-only graph refreshes')
   .requiredOption(
     '--path <absolute-worktree>',
     'Absolute Git worktree root (never inferred from cwd)',
@@ -107,7 +107,7 @@ program
     (language: string, previous: string[] = []) => [...previous, language],
     [],
   )
-  .option('--json', 'Emit machine-readable status JSON')
+  .option('--json', 'Emit machine-readable refresh status or write plan JSON')
   .action(createLazyAction(() => import('./refresh.js'), 'refreshCommand'));
 
 program

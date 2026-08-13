@@ -273,7 +273,7 @@ async function getReposResource(backend: LocalBackend): Promise<string> {
   const repos = await backend.listRepos();
 
   if (repos.length === 0) {
-    return 'repos: []\n# No repositories indexed. Run: gitnexus analyze';
+    return 'repos: []\n# No repositories indexed. For a normal graph bootstrap: inspect `gitnexus refresh plan --path <absolute-worktree>` and, only with write access to every target, run `gitnexus refresh init` then `gitnexus refresh ensure`. Use `gitnexus analyze` only for managed assets, embeddings, or repair.';
   }
 
   const lines: string[] = ['repos:'];
@@ -308,7 +308,7 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   const context = backend.getContext(repoId) || backend.getContext();
 
   if (!context) {
-    return 'error: No codebase loaded. Run: gitnexus analyze';
+    return 'error: No codebase loaded. Inspect `gitnexus refresh plan --path <absolute-worktree>`; only with write access to every target, run `gitnexus refresh init` then `gitnexus refresh ensure`. Use `gitnexus analyze` only for managed assets, embeddings, or repair.';
   }
 
   // Check staleness
@@ -341,7 +341,7 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push('  - list_repos: Discover all indexed repositories');
   lines.push('');
   lines.push(
-    `re_index: Run \`gitnexus refresh ensure --path ${JSON.stringify(repoPath)}\` in terminal if data is stale`,
+    `refresh: Run \`gitnexus refresh status --path ${JSON.stringify(repoPath)}\`, then read-only \`gitnexus refresh plan --path ${JSON.stringify(repoPath)}\`. \`init\`/\`ensure\` write .gitnexus, applicable Git metadata, and GITNEXUS_HOME; run them only with writable targets or scoped approval. Otherwise use stale results with a warning, detect_changes, and source inspection.`,
   );
   lines.push('');
   lines.push('resources_available:');
@@ -583,7 +583,7 @@ async function getSetupResource(backend: LocalBackend): Promise<string> {
   const repos = await backend.listRepos();
 
   if (repos.length === 0) {
-    return '# GitNexus\n\nNo repositories indexed. Run: `npx gitnexus analyze` in a repository.';
+    return '# GitNexus\n\nNo repositories indexed. For a normal graph bootstrap, inspect `gitnexus refresh plan --path <absolute-worktree>` and, only with write access to every target, run `gitnexus refresh init` then `gitnexus refresh ensure`. Use `gitnexus analyze` only for managed assets, embeddings, or repair.';
   }
 
   const sections: string[] = [];

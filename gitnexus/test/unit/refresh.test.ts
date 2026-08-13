@@ -61,6 +61,21 @@ describe('worktree refresh coordinator', () => {
     expect(deriveWorktreeAlias('/tmp/one/app')).toMatch(/^app-[a-f0-9]{12}$/);
   });
 
+  it('rejects a relative GITNEXUS_HOME so plan and detached writers share one authority target', async () => {
+    const repo = await createRepo();
+    process.env.GITNEXUS_HOME = 'relative-gitnexus-home';
+    const { getRefreshPlan, refreshCommand } = await import('../../src/cli/refresh.js');
+    const root = await fs.realpath(repo.dbPath);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    expect(() => getRefreshPlan(root)).toThrow('GITNEXUS_HOME must be an absolute path');
+    await refreshCommand('plan', { path: root });
+    expect(process.exitCode).toBe(1);
+    expect(error).toHaveBeenLastCalledWith(
+      'GitNexus refresh failed: GITNEXUS_HOME must be an absolute path when using `gitnexus refresh`.',
+    );
+  });
+
   it('recognizes a global CLI symlink as the compiled refresh entrypoint', async () => {
     const { isCompiledRefreshEntrypoint } = await import('../../src/cli/refresh.js');
 
@@ -73,6 +88,282 @@ describe('worktree refresh coordinator', () => {
     expect(
       isCompiledRefreshEntrypoint('/usr/local/bin/gitnexus', () => '/opt/lib/other-cli.js'),
     ).toBe(false);
+  });
+
+  it('reports every potential refresh write target without creating coordinator state', async () => {
+    const repo = await createRepo();
+    const home = await createTempDir('gitnexus-refresh-plan-home-');
+    handles.push(home);
+    process.env.GITNEXUS_HOME = home.dbPath;
+    const root = await fs.realpath(repo.dbPath);
+    const { getGlobalDir } = await import('../../src/storage/repo-manager.js');
+    const { getRefreshPlan, refreshCommand } = await import('../../src/cli/refresh.js');
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const plan = getRefreshPlan(root);
+    expect(plan).toMatchObject({
+      worktreePath: root,
+      requiresWriteAccess: true,
+      coversOptionalSerena: false,
+      writeTargetsComplete: true,
+    });
+    expect(plan.writeTargets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: path.join(root, '.gitnexus'), willWrite: true }),
+        expect.objectContaining({ path: getGlobalDir(), willWrite: true }),
+      ]),
+    );
+    expect(plan.writeTargets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: path.join(root, '.git', 'info', 'exclude'),
+          willWrite: true,
+        }),
+      ]),
+    );
+
+    await refreshCommand('plan', { path: root, json: true });
+    expect(JSON.parse(String(write.mock.calls.at(-1)?.[0]))).toEqual(plan);
+    await expect(fs.access(path.join(root, '.gitnexus'))).rejects.toThrow();
+    await expect(fs.access(path.join(home.dbPath, 'registry.json'))).rejects.toThrow();
+  });
+
+  it('marks linked-worktree Git metadata as skipped in a read-only plan', async () => {
+    const repo = await createRepo();
+    const linked = await createTempDir('gitnexus-refresh-plan-linked-');
+    handles.push(linked);
+    execFileSync('git', ['worktree', 'add', '--detach', linked.dbPath], { cwd: repo.dbPath });
+    const root = await fs.realpath(linked.dbPath);
+    const { getRefreshPlan } = await import('../../src/cli/refresh.js');
+
+    expect(getRefreshPlan(root).writeTargets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: path.join(root, '.git'),
+          willWrite: false,
+          purpose: expect.stringContaining('linked worktree: skipped'),
+        }),
+      ]),
+    );
+  });
+
+  it('declares the exact managed Git hook paths before init writes them', async () => {
+    const repo = await createRepo();
+    const fakeCli = path.join(repo.dbPath, 'gitnexus-cli');
+    await fs.writeFile(fakeCli, '#!/usr/bin/env sh\nexit 0\n', { mode: 0o755 });
+    process.env.GITNEXUS_CLI = fakeCli;
+    const root = await fs.realpath(repo.dbPath);
+    const hooksDirectory = path.join(root, '.git', 'hooks');
+    const hookPaths = ['post-commit', 'post-merge', 'post-rewrite', 'post-checkout'].map((event) =>
+      path.join(hooksDirectory, event),
+    );
+    const { getRefreshPlan, installGitHooks, refreshCommand } =
+      await import('../../src/cli/refresh.js');
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const plan = getRefreshPlan(root, { installGitHooks: true });
+    expect(plan.writeTargets).toEqual(
+      expect.arrayContaining(
+        hookPaths.map((targetPath) =>
+          expect.objectContaining({
+            path: targetPath,
+            purpose: expect.stringContaining('GitNexus-managed'),
+            willWrite: true,
+          }),
+        ),
+      ),
+    );
+    await Promise.all(
+      hookPaths.map((targetPath) => expect(fs.access(targetPath)).rejects.toThrow()),
+    );
+
+    await refreshCommand('plan', { path: root, installGitHooks: true, json: true });
+    expect(JSON.parse(String(write.mock.calls.at(-1)?.[0]))).toEqual(plan);
+
+    const installed = await installGitHooks(root);
+    expect(installed.installed).toEqual(hookPaths);
+
+    const afterInstall = getRefreshPlan(root, { installGitHooks: true });
+    expect(afterInstall.writeTargets).toEqual(
+      expect.arrayContaining(
+        hookPaths.map((targetPath) =>
+          expect.objectContaining({
+            path: targetPath,
+            purpose: expect.stringContaining('already matches'),
+            willWrite: false,
+          }),
+        ),
+      ),
+    );
+  });
+
+  it('declares Git hook installation skips for linked worktrees, configured dispatchers, and custom hooks', async () => {
+    const repo = await createRepo();
+    const fakeCli = path.join(repo.dbPath, 'gitnexus-cli');
+    await fs.writeFile(fakeCli, '#!/usr/bin/env sh\nexit 0\n', { mode: 0o755 });
+    process.env.GITNEXUS_CLI = fakeCli;
+    const root = await fs.realpath(repo.dbPath);
+    const hooksDirectory = path.join(root, '.git', 'hooks');
+    const customHookPath = path.join(hooksDirectory, 'post-commit');
+    const { getRefreshPlan, installGitHooks } = await import('../../src/cli/refresh.js');
+
+    await fs.writeFile(customHookPath, '#!/usr/bin/env sh\necho user\n', { mode: 0o755 });
+    const customHookPlan = getRefreshPlan(root, { installGitHooks: true });
+    expect(customHookPlan.writeTargets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: customHookPath,
+          purpose: expect.stringContaining('will not be overwritten'),
+          willWrite: false,
+        }),
+        expect.objectContaining({
+          path: path.join(hooksDirectory, 'post-merge'),
+          purpose: expect.stringContaining(`because ${customHookPath} blocks`),
+          willWrite: false,
+        }),
+      ]),
+    );
+    await expect(installGitHooks(root)).resolves.toMatchObject({
+      installed: [],
+      skipped: expect.stringContaining('does not exactly match'),
+    });
+
+    execFileSync('git', ['config', 'core.hooksPath', 'custom-hooks'], { cwd: root });
+    const configuredHooksDirectory = path.join(root, 'custom-hooks');
+    const configuredPathPlan = getRefreshPlan(root, { installGitHooks: true });
+    expect(configuredPathPlan.writeTargets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: configuredHooksDirectory,
+          purpose: expect.stringContaining('unknown dispatcher'),
+          willWrite: false,
+        }),
+      ]),
+    );
+    await expect(installGitHooks(root)).resolves.toMatchObject({
+      installed: [],
+      skipped: expect.stringContaining('will not overwrite an unknown hook dispatcher'),
+    });
+
+    execFileSync('git', ['config', 'core.hooksPath', '.husky/_'], { cwd: root });
+    const huskyHooksDirectory = path.join(root, '.husky', '_');
+    const huskyPlan = getRefreshPlan(root, { installGitHooks: true });
+    expect(huskyPlan.writeTargets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: huskyHooksDirectory,
+          purpose: expect.stringContaining('Husky'),
+          willWrite: false,
+        }),
+      ]),
+    );
+    await expect(installGitHooks(root)).resolves.toMatchObject({
+      installed: [],
+      skipped: expect.stringContaining('will not write tracked .husky/post-* files'),
+    });
+
+    const linked = await createTempDir('gitnexus-refresh-plan-hook-linked-');
+    handles.push(linked);
+    execFileSync('git', ['worktree', 'add', '--detach', linked.dbPath], { cwd: root });
+    const linkedRoot = await fs.realpath(linked.dbPath);
+    const linkedHooksDirectory = execFileSync(
+      'git',
+      ['rev-parse', '--path-format=absolute', '--git-path', 'hooks'],
+      { cwd: linkedRoot, encoding: 'utf8' },
+    ).trim();
+    const linkedPlan = getRefreshPlan(linkedRoot, { installGitHooks: true });
+    expect(linkedPlan.writeTargets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: linkedHooksDirectory,
+          purpose: expect.stringContaining('linked worktree'),
+          willWrite: false,
+        }),
+      ]),
+    );
+    await expect(installGitHooks(linkedRoot)).resolves.toMatchObject({
+      installed: [],
+      skipped: expect.stringContaining('linked worktree'),
+    });
+  });
+
+  it('does not inspect Serena configuration when the read-only plan omits Serena', async () => {
+    const repo = await createRepo();
+    const root = await fs.realpath(repo.dbPath);
+    process.env.SERENA_HOME = 'relative-serena-home-must-not-be-read';
+    const { getRefreshPlan } = await import('../../src/cli/refresh.js');
+
+    expect(getRefreshPlan(root)).toMatchObject({ coversOptionalSerena: false });
+  });
+
+  it('includes resolved Serena targets only when the read-only plan requests Serena', async () => {
+    const repo = await createRepo();
+    const home = await createTempDir('gitnexus-refresh-serena-plan-home-');
+    const serenaHome = await createTempDir('gitnexus-refresh-serena-plan-state-');
+    handles.push(home, serenaHome);
+    const fakeSerena = path.join(repo.dbPath, 'fake-serena');
+    const argsPath = path.join(repo.dbPath, 'serena-plan-args.txt');
+    await fs.writeFile(
+      fakeSerena,
+      '#!/usr/bin/env sh\nprintf \'%s\\n\' "$@" > "$GITNEXUS_SERENA_ARGS_FILE"\n',
+      { mode: 0o755 },
+    );
+    await fs.chmod(fakeSerena, 0o755);
+    const externalDataRoot = path.join(serenaHome.dbPath, 'project-data');
+    const configPath = path.join(serenaHome.dbPath, 'serena_config.yml');
+    await fs.writeFile(
+      configPath,
+      `project_serena_folder_location: ${externalDataRoot}/$projectFolderName/.serena\n`,
+    );
+    process.env.GITNEXUS_HOME = home.dbPath;
+    process.env.SERENA_HOME = serenaHome.dbPath;
+    process.env.GITNEXUS_SERENA_ARGS_FILE = argsPath;
+    const root = await fs.realpath(repo.dbPath);
+    const canonicalSerenaHome = await fs.realpath(serenaHome.dbPath);
+    const { getRefreshPlan, refreshCommand } = await import('../../src/cli/refresh.js');
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    const plan = getRefreshPlan(root, {
+      withSerena: true,
+      serenaBin: fakeSerena,
+      serenaLanguages: ['typescript'],
+    });
+    expect(plan.coversOptionalSerena).toBe(true);
+    expect(plan.writeTargetsComplete).toBe(false);
+    expect(plan.externalWriteRisk).toContain('not an exhaustive list');
+    expect(plan.writeTargets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: canonicalSerenaHome, willWrite: true }),
+        expect.objectContaining({
+          path: path.join(canonicalSerenaHome, 'serena_config.yml'),
+          willWrite: true,
+        }),
+        expect.objectContaining({
+          path: path.join(canonicalSerenaHome, 'gitnexus-refresh.lock'),
+          willWrite: true,
+        }),
+        expect.objectContaining({
+          path: path.join(externalDataRoot, path.basename(root), '.serena'),
+          willWrite: true,
+        }),
+      ]),
+    );
+
+    await refreshCommand('plan', {
+      path: root,
+      json: true,
+      withSerena: true,
+      serenaBin: fakeSerena,
+      serenaLanguages: ['typescript'],
+    });
+    expect(JSON.parse(String(write.mock.calls.at(-1)?.[0]))).toEqual(plan);
+    await expect(fs.access(path.join(root, '.gitnexus'))).rejects.toThrow();
+    await expect(fs.access(path.join(root, '.serena'))).rejects.toThrow();
+    await expect(
+      fs.access(path.join(canonicalSerenaHome, 'gitnexus-refresh.lock')),
+    ).rejects.toThrow();
+    await expect(fs.access(externalDataRoot)).rejects.toThrow();
+    await expect(fs.access(argsPath)).rejects.toThrow();
   });
 
   it('persists state and stale markers independently from generated agent assets', async () => {
@@ -129,6 +420,8 @@ describe('worktree refresh coordinator', () => {
         force: true,
         indexOnly: true,
         skipWorkers: true,
+        extensionInstallPolicy: 'load-only',
+        suppressEmbeddingGeneration: true,
         registryName: 'repo-worktree',
       }),
       expect.any(Object),
@@ -150,7 +443,13 @@ describe('worktree refresh coordinator', () => {
 
     expect(runFullAnalysisMock).toHaveBeenCalledWith(
       root,
-      expect.objectContaining({ force: true, indexOnly: true, skipWorkers: true }),
+      expect.objectContaining({
+        force: true,
+        indexOnly: true,
+        skipWorkers: true,
+        extensionInstallPolicy: 'load-only',
+        suppressEmbeddingGeneration: true,
+      }),
       expect.any(Object),
     );
   });

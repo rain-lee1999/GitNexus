@@ -67,7 +67,7 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 
 This project is indexed by GitNexus as **GitNexus** (23473 symbols, 31158 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-> Graph stale/missing: the Codex gate queues an index-only refresh and denies this call. Retry, or run `gitnexus refresh ensure --path <absolute-worktree>`. Gated graph tools require the absolute worktree path in `repo`; aliases are rejected. `detect_changes` is not freshness-gated.
+> Graph stale/missing: `status` → read-only `plan` → only with writable targets/scoped approval `gitnexus refresh ensure --path <absolute-worktree>`. Index-only writes `.gitnexus/`, Git metadata, and `GITNEXUS_HOME`; else stale graph + source. Use absolute `repo`. `detect_changes` is not freshness-gated.
 
 ## Always Do
 

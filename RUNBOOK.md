@@ -25,17 +25,27 @@ Use `npx gitnexus …` from any path after global/published install, or `node di
 **Fix (for the target worktree):**
 
 ```bash
-# Run once for every worktree.
+# Read-only preflight: do not create coordinator state or modify the repository.
+gitnexus refresh status --path /absolute/path/to/worktree
+gitnexus refresh plan --path /absolute/path/to/worktree
+
+# If this refresh also prewarms Serena, pass the same Serena flags to plan.
+gitnexus refresh plan --path /absolute/path/to/worktree \
+  --with-serena --serena-bin /absolute/path/to/serena --serena-language typescript
+
+# Only after every planned write target is writable or has scoped approval:
+# run once for every worktree.
 gitnexus refresh init --path /absolute/path/to/worktree
 
 # Optional: primary checkout only. Linked worktrees share hooks and are skipped safely.
 gitnexus refresh init --path /absolute/path/to/primary-checkout --install-git-hooks
 
-# Normal stale-index recovery. Safe when multiple Codex sessions ask at once.
+# Normal stale-index recovery. Safe when multiple Codex sessions ask at once,
+# after its planned write targets are authorized.
 gitnexus refresh ensure --path /absolute/path/to/worktree
 ```
 
-`ensure` takes the worktree analysis lock and runs `analyze --index-only`; it can bootstrap the first graph index and updates the graph and registry without rewriting `AGENTS.md` or `.agents/skills/`. Use full `analyze` only when you need those managed assets, embeddings, or an explicit repair. In multi-worktree Codex sessions, pass the same absolute worktree path as `repo` to the freshness-gated graph tools; the gate rejects aliases. `detect_changes` is not freshness-gated.
+`plan` is read-only and lists GitNexus-owned write targets. Add `--install-git-hooks` to plan when needed so it declares each managed `post-*` wrapper or a skipped path. When Serena is requested, pass the same Serena flags so the plan includes GitNexus-known global config/lock and resolved project data, but treats its external process as non-exhaustive (`writeTargetsComplete: false`): language servers and toolchains may write environment-specific caches or install paths. Obtain separate authority for that external scope before `--with-serena`. `init` and `ensure` write the target worktree's `.gitnexus/`, applicable Git exclude metadata, and `GITNEXUS_HOME` (registry and locks). `ensure` takes the worktree analysis lock and runs `analyze --index-only`; it can bootstrap the first graph index and does not rewrite `AGENTS.md` or `.agents/skills/`, but is still a write operation. Use full `analyze` only when you need those managed assets, embeddings, or an explicit repair. If the task cannot write every planned GitNexus target (and the disclosed Serena external scope when enabled), do not retry refresh: use the stale graph only with a warning, `detect_changes`, and source inspection. In multi-worktree Codex sessions, pass the same absolute worktree path as `repo` to the freshness-gated graph tools; the gate rejects aliases. `detect_changes` is not freshness-gated.
 
 **Force full rebuild** (same commit but suspect corruption or changed ignore rules):
 
@@ -47,6 +57,7 @@ npx gitnexus analyze --force
 
 ```bash
 gitnexus refresh status --path /absolute/path/to/worktree
+gitnexus refresh plan --path /absolute/path/to/worktree
 gitnexus status  # broader index health and embedding diagnostics
 ```
 

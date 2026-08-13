@@ -26,7 +26,9 @@ The plugin has two intentionally separate paths:
 - The `^Bash$` hooks preserve the advisory search integration. They enrich only `rg`/`grep` calls, and after a successful `git commit`, `merge`, `rebase`, `cherry-pick`, `pull`, or `reset` they run only `gitnexus refresh mark --path <worktree>`. They never block a shell command and never run `ensure` or `analyze`.
 - The graph-query gate matches only these read-only MCP tools: `query`, `cypher`, `context`, `impact`, `route_map`, `tool_map`, `shape_check`, and `api_impact`. Its actual matcher is `^mcp__gitnexus__(query|cypher|context|impact|route_map|tool_map|shape_check|api_impact)$`; it does not match `detect_changes`, `list_repos`, `group_list`, `rename`, `group_sync`, or arbitrary MCP tools.
 
-Before a matched graph query, the gate requires `repo` as an absolute worktree path. It deliberately refuses an omitted path or a registry alias, because the MCP server cannot infer a Codex client's worktree safely when several repositories are indexed. It then runs `gitnexus refresh status --json` for that worktree. A fresh result is allowed. A missing, stale, unhealthy, or unverifiable result is denied and asks the coordinator to queue a deduplicated background `ensure`; retry when it completes, or run `ensure` directly to wait. The hook itself never runs an index rebuild.
+Before a matched graph query, the gate requires `repo` as an absolute worktree path. It deliberately refuses an omitted path or a registry alias, because the MCP server cannot infer a Codex client's worktree safely when several repositories are indexed. It then runs only `gitnexus refresh status --json` for that worktree. A fresh result is allowed. A missing, stale, unhealthy, or unverifiable result is denied; the gate never starts or queues a refresh.
+
+The denial tells Codex to inspect `refresh status` and `refresh plan` first. `gitnexus refresh init` and `gitnexus refresh ensure` are write operations: they can write the target worktree's `.gitnexus/`, Git metadata, and `$GITNEXUS_HOME` (the global registry and locks). Run them only when the task has write access to every GitNexus target or after scoped approval. If `--with-serena` is used, its plan reports `writeTargetsComplete: false`: Serena/LSP/toolchain writes outside the known paths need separate authority.
 
 The hooks invoke an already-installed GitNexus CLI: set `GITNEXUS_CLI` to an absolute executable path to override it, or keep `gitnexus` on `PATH`. They never use a plugin-cache `dist` path, `npx`, or a package download.
 
@@ -37,6 +39,8 @@ The hooks invoke an already-installed GitNexus CLI: set `GITNEXUS_CLI` to an abs
 Initialize every worktree independently, including the primary checkout:
 
 ```bash
+gitnexus refresh status --path "$(git rev-parse --show-toplevel)" --json
+gitnexus refresh plan --path "$(git rev-parse --show-toplevel)" --json
 gitnexus refresh init --path "$(git rev-parse --show-toplevel)"
 gitnexus refresh ensure --path "$(git rev-parse --show-toplevel)"
 ```
@@ -57,6 +61,8 @@ gitnexus refresh init --path "$(git rev-parse --show-toplevel)" \
 
 `--with-serena` requires at least one repeatable `--serena-language <language>` option, and `--serena-language` cannot be used alone. GitNexus runs `serena project index <worktree> --language <language> ...` under a single global Serena lock, so concurrent worktree initialization cannot race. You may provide the executable through `GITNEXUS_SERENA_BIN` instead of `--serena-bin`.
 
+Before a Serena initialization, pass the same `--with-serena`, `--serena-bin`, and `--serena-language` options to `refresh plan`; the resulting read-only plan includes GitNexus-known Serena global config/lock and resolved project-data paths, and explicitly marks its external language-server/toolchain write surface as non-exhaustive.
+
 For a normal refresh, run:
 
 ```bash
@@ -68,6 +74,6 @@ Use `gitnexus refresh ensure --path <worktree> --force` only when a graph query 
 
 When several worktrees are active, each has its own `.gitnexus` graph and analysis lock. Automatic `refresh ensure` uses sequential Tree-sitter parsing deliberately: it avoids `worker_threads` teardown hazards in native parser bindings, while a direct `gitnexus analyze` still uses its parallel worker default. Always pass the absolute worktree path as `repo` for every gated graph query; that lets the gate check the right index without relying on an ambiguous registry alias. The gate never accepts an alias.
 
-The stale marker and query gate are coordination controls, not an implicit filesystem watcher. The gate may queue a demand-driven coordinator refresh; the coordinator serializes writers, while Git hooks only mark history changes.
+The stale marker and query gate are coordination controls, not an implicit filesystem watcher. The gate only checks freshness and denies stale graph queries; foreground `refresh init` / `refresh ensure` remain explicit, while Git hooks only mark history changes.
 
 The bundled MCP server is stdio-based and needs Node.js 20 or newer. Its package version is pinned to the plugin version for reproducible installation.

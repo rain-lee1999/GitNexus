@@ -30,17 +30,22 @@ Run from the project root. This parses source files, builds the knowledge graph,
 ### refresh — Worktree-safe graph freshness
 
 ```bash
-# Run once per worktree; optional managed Git hooks only mark it stale.
+# Read-only preflight. This does not create refresh state.
+gitnexus refresh status --path /absolute/path/to/worktree
+gitnexus refresh plan --path /absolute/path/to/worktree
+
+# Only after every target in the plan is writable (or has scoped approval),
+# run once per worktree; optional managed Git hooks only mark it stale.
 gitnexus refresh init --path /absolute/path/to/worktree --install-git-hooks
 
 # Normal refresh: one writer per worktree, graph + registry only.
 gitnexus refresh ensure --path /absolute/path/to/worktree
 
-# Inspect the target worktree before or after a refresh.
-gitnexus refresh status --path /absolute/path/to/worktree
 ```
 
-`refresh ensure` runs `analyze --index-only`, so it never updates `AGENTS.md` or `.agents/skills/`. It can bootstrap the first graph index. In a multi-worktree Codex session, the freshness-gated graph tools (`query`, `cypher`, `context`, `impact`, `route_map`, `tool_map`, `shape_check`, and `api_impact`) require `repo` as the absolute worktree path; the Codex gate rejects aliases. `detect_changes` is not freshness-gated.
+`refresh plan` lists GitNexus-owned write targets. Pass `--install-git-hooks` to plan when needed so it declares each managed `post-*` wrapper or an explicit skip. `refresh init` / `refresh ensure` write the worktree `.gitnexus/`, applicable Git metadata, and `GITNEXUS_HOME` (global registry and locks). For `--with-serena`, the plan lists GitNexus-known Serena paths but reports `writeTargetsComplete: false`: external language servers/toolchains may write environment-specific caches or install paths, requiring separate authority. `refresh ensure` runs `analyze --index-only`, so it never updates `AGENTS.md` or `.agents/skills/`, but it is not read-only. It can bootstrap the first graph index. If every planned GitNexus target (and the disclosed external Serena scope, if enabled) is not authorized, report the missing paths and use stale graph results only with a warning, `detect_changes`, and source inspection. In a multi-worktree Codex session, freshness-gated graph tools (`query`, `cypher`, `context`, `impact`, `route_map`, `tool_map`, `shape_check`, and `api_impact`) require `repo` as the absolute worktree path; the Codex gate rejects aliases and never starts a refresh. `detect_changes` is not freshness-gated.
+
+For Serena prewarm, pass the same `--with-serena`, `--serena-bin`, and `--serena-language` values to `refresh plan` first. That read-only plan additionally declares Serena's global config/lock and the resolved project-data directory.
 
 ### setup / doctor codex — Install and verify Codex integration
 
@@ -105,5 +110,5 @@ Lists all repositories registered in `~/.gitnexus/registry.json`. The MCP `list_
 ## Troubleshooting
 
 - **"Not inside a git repository"**: Run from a directory inside a git repo
-- **Graph index is stale or missing**: Run `gitnexus refresh ensure --path <absolute-worktree>`, then retry the graph call with `repo` set to that path
+- **Graph index is stale or missing**: Run read-only `gitnexus refresh status --path <absolute-worktree>` and `gitnexus refresh plan --path <absolute-worktree>`; only with authority for every target, run `refresh init` / `refresh ensure`, then retry the graph call with `repo` set to that path
 - **Embeddings slow**: Omit `--embeddings` (it's off by default) or set `OPENAI_API_KEY` for faster API-based embedding

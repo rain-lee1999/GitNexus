@@ -131,6 +131,19 @@ describe('ExtensionManager — install policies', () => {
   });
 });
 
+describe('ExtensionManager — coordinator boundary', () => {
+  it('load-only cannot spawn an installer even when the process default is auto', async () => {
+    const installExtension = vi.fn().mockResolvedValue(okInstall);
+    const manager = new ExtensionManager({ policy: 'auto', installExtension, warn: noopWarn });
+    const query = vi.fn().mockRejectedValue(new Error('Extension "fts" not found'));
+
+    await expect(manager.ensure(query, 'fts', 'FTS', { policy: 'load-only' })).resolves.toBe(false);
+
+    expect(installExtension).not.toHaveBeenCalled();
+    expect(query.mock.calls.map(([sql]) => sql)).toEqual(['LOAD EXTENSION fts']);
+  });
+});
+
 describe('ExtensionManager — caching', () => {
   it('caches install attempt outcome to avoid retrying within the same process', async () => {
     const installExtension = vi.fn().mockResolvedValue(timedOutInstall);

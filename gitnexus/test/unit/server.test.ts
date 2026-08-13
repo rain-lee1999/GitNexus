@@ -92,6 +92,7 @@ describe('createMCPServer', () => {
       expect(firstWindow).toContain('query then context');
       expect(firstWindow).toContain('impact with direction "upstream"');
       expect(firstWindow).toContain('detect_changes');
+      expect(firstWindow).toContain('refresh plan');
       expect(firstWindow).toContain('refresh ensure --path <absolute-worktree>');
       expect(firstWindow).toContain('absolute worktree path');
       expect(firstWindow).toContain('detect_changes` is not freshness-gated');

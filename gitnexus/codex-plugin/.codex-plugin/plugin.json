@@ -1,6 +1,6 @@
 {
   "name": "gitnexus",
-  "version": "1.6.7",
+  "version": "1.6.8",
   "description": "Codex-native code intelligence with freshness-gated graph queries, execution-flow search, symbol context, blast-radius analysis, and change detection.",
   "author": {
     "name": "GitNexus"

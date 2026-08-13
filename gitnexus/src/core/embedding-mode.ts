@@ -17,6 +17,8 @@ export interface EmbeddingModeInput {
   force?: boolean;
   embeddings?: boolean;
   dropEmbeddings?: boolean;
+  /** Keep an index-only coordinator refresh off the embedding-provider path. */
+  suppressEmbeddingGeneration?: boolean;
 }
 
 export interface EmbeddingMode {
@@ -39,10 +41,12 @@ export function deriveEmbeddingMode(
   const explicit = !!options.embeddings;
   const force = !!options.force;
 
-  const forceRegenerateEmbeddings = force && !explicit && !drop && hasExisting;
+  const suppressGeneration = !!options.suppressEmbeddingGeneration;
+  const forceRegenerateEmbeddings =
+    force && !explicit && !drop && !suppressGeneration && hasExisting;
   const preserveExistingEmbeddings =
     !explicit && !drop && !forceRegenerateEmbeddings && hasExisting;
-  const shouldGenerateEmbeddings = explicit || forceRegenerateEmbeddings;
+  const shouldGenerateEmbeddings = !suppressGeneration && (explicit || forceRegenerateEmbeddings);
   const shouldLoadCache = !drop && (shouldGenerateEmbeddings || preserveExistingEmbeddings);
 
   return {

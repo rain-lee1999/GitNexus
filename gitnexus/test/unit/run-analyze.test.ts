@@ -208,6 +208,14 @@ describe('deriveEmbeddingMode', () => {
     expect(m.shouldLoadCache).toBe(true);
   });
 
+  it('coordinator refresh suppresses generation even when its graph rebuild is forced', () => {
+    const m = deriveEmbeddingMode({ force: true, suppressEmbeddingGeneration: true }, 500);
+    expect(m.shouldGenerateEmbeddings).toBe(false);
+    expect(m.forceRegenerateEmbeddings).toBe(false);
+    expect(m.preserveExistingEmbeddings).toBe(true);
+    expect(m.shouldLoadCache).toBe(true);
+  });
+
   it('--force + existing=0 → no embedding work (force keeps prior semantics)', () => {
     const m = deriveEmbeddingMode({ force: true }, 0);
     expect(m.forceRegenerateEmbeddings).toBe(false);

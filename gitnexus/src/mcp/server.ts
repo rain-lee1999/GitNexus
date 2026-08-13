@@ -36,7 +36,7 @@ import { getResourceDefinitions, getResourceTemplates, readResource } from './re
  * instruction budget still receive the complete safety-critical workflow.
  */
 export const GITNEXUS_MCP_INSTRUCTIONS =
-  'GitNexus: use list_repos; query then context for unfamiliar code; before edits call impact with direction "upstream"; before commit call detect_changes. Gated graph tools require `repo` as an absolute worktree path; aliases are rejected. Stale/missing graph calls are denied while the Codex gate queues an index-only refresh; retry or run `gitnexus refresh ensure --path <absolute-worktree>`. `detect_changes` is not freshness-gated. Mutating tools may be disabled.';
+  'GitNexus: list_repos; query then context; before edits impact with direction "upstream"; before commit detect_changes. Graph tools require `repo` as an absolute worktree path; aliases rejected. Stale/missing: `gitnexus refresh status` → read-only `gitnexus refresh plan` → only with writable targets/scoped approval `gitnexus refresh ensure --path <absolute-worktree>`. Index-only writes .gitnexus, Git metadata, and GITNEXUS_HOME; otherwise use stale results + source. `detect_changes` is not freshness-gated.';
 
 export interface CreateMCPServerOptions {
   /** Expose tools whose annotations do not mark them as read-only. */

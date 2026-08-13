@@ -33,7 +33,8 @@ export function checkStaleness(repoPath: string, lastCommit: string): StalenessI
         commitsBehind,
         hint:
           `⚠️ Index is ${commitsBehind} commit${commitsBehind > 1 ? 's' : ''} behind HEAD. ` +
-          `Run \`gitnexus refresh ensure --path ${JSON.stringify(path.resolve(repoPath))}\` to update it safely.`,
+          `First inspect \`gitnexus refresh status --path ${JSON.stringify(path.resolve(repoPath))}\` and read-only \`gitnexus refresh plan --path ${JSON.stringify(path.resolve(repoPath))}\`. ` +
+          `Run \`gitnexus refresh init --path ${JSON.stringify(path.resolve(repoPath))}\` / \`gitnexus refresh ensure --path ${JSON.stringify(path.resolve(repoPath))}\` only with write access to every listed target or scoped approval; otherwise treat graph results as stale and use source/\`detect_changes\`.`,
       };
     }
 
@@ -133,14 +134,15 @@ export async function checkCwdMatch(cwd: string): Promise<CwdMatch> {
     hint =
       `⚠️ Index for "${sibling.name}" was built at ${sibling.path}; ` +
       `your cwd (${cwdGitRoot}) is a sibling clone that is ${drift} commit${drift > 1 ? 's' : ''} ` +
-      `ahead of the indexed commit. Results may be stale or incorrect — run ` +
-      `\`gitnexus refresh ensure --path ${JSON.stringify(cwdGitRoot)}\` to refresh this worktree index.`;
+      `ahead of the indexed commit. Results may be stale or incorrect — inspect ` +
+      `\`gitnexus refresh status --path ${JSON.stringify(cwdGitRoot)}\` then read-only \`gitnexus refresh plan --path ${JSON.stringify(cwdGitRoot)}\`; ` +
+      `run \`gitnexus refresh init --path ${JSON.stringify(cwdGitRoot)}\` / \`gitnexus refresh ensure --path ${JSON.stringify(cwdGitRoot)}\` only with write access to every listed target or scoped approval.`;
   } else {
     hint =
       `⚠️ Index for "${sibling.name}" was built at ${sibling.path}; ` +
       `your cwd (${cwdGitRoot}) is a sibling clone whose HEAD differs from the indexed commit. ` +
-      `Results may be stale or incorrect — run \`gitnexus refresh ensure --path ${JSON.stringify(cwdGitRoot)}\` ` +
-      `to refresh this worktree index.`;
+      `Results may be stale or incorrect — inspect \`gitnexus refresh status --path ${JSON.stringify(cwdGitRoot)}\` then read-only ` +
+      `\`gitnexus refresh plan --path ${JSON.stringify(cwdGitRoot)}\`; run \`gitnexus refresh init --path ${JSON.stringify(cwdGitRoot)}\` / \`gitnexus refresh ensure --path ${JSON.stringify(cwdGitRoot)}\` only with write access to every listed target or scoped approval.`;
   }
 
   return {

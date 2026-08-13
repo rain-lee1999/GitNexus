@@ -105,20 +105,30 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 
 ### Worktree-safe refresh
 
-Use `refresh ensure` for the first graph index and for ordinary graph freshness. Use a full `analyze` only when you want managed `AGENTS.md`/skills, embeddings, or an explicit repair. Initialize every worktree once; only a primary checkout using conventional hooks may install Git-side stale markers:
+Use `refresh ensure` for the first graph index and ordinary graph freshness, but only after checking its write plan. Use a full `analyze` only when you want managed `AGENTS.md`/skills, embeddings, or an explicit repair. Initialize every worktree once; only a primary checkout using conventional hooks may install Git-side stale markers:
 
 ```bash
-# Run once in every worktree.
+# Read-only: inspect freshness and every path a refresh may mutate.
+gitnexus refresh status --path /absolute/path/to/worktree
+gitnexus refresh plan --path /absolute/path/to/worktree
+
+# Include Serena's config/lock/project-data targets when prewarming Serena.
+gitnexus refresh plan --path /absolute/path/to/worktree \
+  --with-serena --serena-bin /absolute/path/to/serena --serena-language typescript
+
+# Only after the worktree .gitnexus/, applicable Git metadata, and GITNEXUS_HOME
+# are writable (or a scoped approval covers all write targets), run once per worktree.
 gitnexus refresh init --path /absolute/path/to/worktree
 
 # Optional: primary checkout only. Linked worktrees share Git hooks and are skipped safely.
 gitnexus refresh init --path /absolute/path/to/primary-checkout --install-git-hooks
 
-# Safe to call from concurrent Codex sessions; one writer per worktree.
+# Safe to call from concurrent Codex sessions once its write targets are authorized;
+# one writer per worktree.
 gitnexus refresh ensure --path /absolute/path/to/worktree
 ```
 
-`refresh ensure` serializes writers and runs `analyze --index-only`, so it never rewrites `AGENTS.md` or `.agents/skills/`. The Codex graph gate queues this refresh on demand when a stale graph query is attempted, then denies that one call; retry when it completes, or use `ensure` above when the task must wait. For the freshness-gated graph tools (`query`, `cypher`, `context`, `impact`, `route_map`, `tool_map`, `shape_check`, and `api_impact`), pass `repo` explicitly as the absolute worktree path; the gate intentionally rejects aliases. `detect_changes` is intentionally not freshness-gated. If `core.hooksPath` is already managed by Husky, another dispatcher, or the checkout is linked, `init --install-git-hooks` safely reports a skip instead of changing project hook files.
+`refresh plan` is read-only and lists GitNexus-owned mutation targets before coordinator state exists. Pass `--install-git-hooks` to the plan when that initialization option is intended; it declares each managed `post-*` wrapper or an explicit skip. `refresh init` and `refresh ensure` write the worktree's `.gitnexus/`, applicable Git exclude metadata, and `GITNEXUS_HOME` (registry and locks). Pass the same `--with-serena` arguments to `plan` before a Serena prewarm so it lists GitNexus-known Serena config/lock/project-data paths. That path deliberately reports `writeTargetsComplete: false`: Serena, language servers, and toolchains are external executables that can write environment-specific caches or install paths which cannot be exhaustively predicted. Obtain separate authority for those external writes before using `--with-serena`. `refresh ensure` serializes writers and runs `analyze --index-only`: it does not rewrite `AGENTS.md` or `.agents/skills/`, but it is not a read-only cache operation. The Codex graph gate only checks freshness and denies stale graph calls; it does not queue or authorize a refresh. Without authority for every planned GitNexus target (and the disclosed external Serena scope, if enabled), use existing graph results only with an explicit stale warning, `detect_changes`, and source inspection. For the freshness-gated graph tools (`query`, `cypher`, `context`, `impact`, `route_map`, `tool_map`, `shape_check`, and `api_impact`), pass `repo` explicitly as the absolute worktree path; the gate intentionally rejects aliases. `detect_changes` is intentionally not freshness-gated. If `core.hooksPath` is already managed by Husky, another dispatcher, or the checkout is linked, `init --install-git-hooks` safely reports a skip instead of changing project hook files.
 
 ### MCP Setup
 
@@ -230,8 +240,8 @@ gitnexus setup --codex-scope project  # Write project-local Codex MCP config and
 gitnexus doctor codex            # Verify Codex CLI, plugin, skills, MCP config, and protocol
 gitnexus refresh init --path /abs/worktree  # Initialize one worktree
 gitnexus refresh status --path /abs/worktree                    # Show its freshness state
-gitnexus refresh request --path /abs/worktree                   # Queue a deduplicated background ensure
-gitnexus refresh ensure --path /abs/worktree                    # Serialized index-only refresh
+gitnexus refresh plan --path /abs/worktree                      # Read-only write-target declaration
+gitnexus refresh ensure --path /abs/worktree                    # Authorized serialized index-only refresh
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI connection
 gitnexus list                    # List all indexed repositories
