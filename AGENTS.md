@@ -64,7 +64,7 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 <!-- gitnexus:context-version:1 -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **GitNexus** (23081 symbols, 30504 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **GitNexus** (23081 symbols, 30497 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -103,7 +103,7 @@ This project is indexed by GitNexus as **GitNexus** (23081 symbols, 30504 relati
 | Review a pull request or code changes | `.agents/skills/gitnexus-pr-review/SKILL.md` |
 | Tools, resources, schema reference | `.agents/skills/gitnexus-guide/SKILL.md` |
 | Index, status, clean, wiki CLI commands | `.agents/skills/gitnexus-cli/SKILL.md` |
-| Work in the Ingestion area (222 symbols) | `.agents/skills/gitnexus-generated-ingestion/SKILL.md` |
+| Work in the Ingestion area (221 symbols) | `.agents/skills/gitnexus-generated-ingestion/SKILL.md` |
 | Work in the Cli area (146 symbols) | `.agents/skills/gitnexus-generated-cli/SKILL.md` |
 | Work in the Components area (108 symbols) | `.agents/skills/gitnexus-generated-components/SKILL.md` |
 | Work in the Group area (96 symbols) | `.agents/skills/gitnexus-generated-group/SKILL.md` |
