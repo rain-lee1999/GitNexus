@@ -1,6 +1,6 @@
 ---
 name: gitnexus-refactoring
-description: "Use when the user wants to rename, extract, split, move, or restructure code safely. Examples: \"Rename this function\", \"Extract this into a module\", \"Refactor this class\", \"Move this to a separate file\""
+description: 'Use when the user wants to rename, extract, split, move, or restructure code safely. Examples: "Rename this function", "Extract this into a module", "Refactor this class", "Move this to a separate file"'
 ---
 
 # Refactoring with GitNexus
@@ -16,13 +16,13 @@ description: "Use when the user wants to rename, extract, split, move, or restru
 ## Workflow
 
 ```
-1. gitnexus_impact({target: "X", direction: "upstream"})  → Map all dependents
-2. gitnexus_query({query: "X"})                            → Find execution flows involving X
-3. gitnexus_context({name: "X"})                           → See all incoming/outgoing refs
+1. gitnexus_impact({target: "X", direction: "upstream", repo: "<absolute-worktree>"})  → Map all dependents
+2. gitnexus_query({query: "X", repo: "<absolute-worktree>"})                            → Find execution flows involving X
+3. gitnexus_context({name: "X", repo: "<absolute-worktree>"})                           → See all incoming/outgoing refs
 4. Plan update order: interfaces → implementations → callers → tests
 ```
 
-> If "Index is stale" → run `npx gitnexus analyze` in terminal.
+> In a multi-worktree session, graph calls require `repo` as the absolute worktree path. The Codex freshness gate rejects aliases. If a graph call is stale or missing, run `gitnexus refresh ensure --path <absolute-worktree>`, then retry. `detect_changes` is not freshness-gated.
 
 ## Checklists
 
@@ -39,8 +39,8 @@ description: "Use when the user wants to rename, extract, split, move, or restru
 ### Extract Module
 
 ```
-- [ ] gitnexus_context({name: target}) — see all incoming/outgoing refs
-- [ ] gitnexus_impact({target, direction: "upstream"}) — find all external callers
+- [ ] gitnexus_context({name: target, repo: "<absolute-worktree>"}) — see all incoming/outgoing refs
+- [ ] gitnexus_impact({target, direction: "upstream", repo: "<absolute-worktree>"}) — find all external callers
 - [ ] Define new module interface
 - [ ] Extract code, update imports
 - [ ] gitnexus_detect_changes() — verify affected scope
@@ -50,9 +50,9 @@ description: "Use when the user wants to rename, extract, split, move, or restru
 ### Split Function/Service
 
 ```
-- [ ] gitnexus_context({name: target}) — understand all callees
+- [ ] gitnexus_context({name: target, repo: "<absolute-worktree>"}) — understand all callees
 - [ ] Group callees by responsibility
-- [ ] gitnexus_impact({target, direction: "upstream"}) — map callers to update
+- [ ] gitnexus_impact({target, direction: "upstream", repo: "<absolute-worktree>"}) — map callers to update
 - [ ] Create new functions/services
 - [ ] Update callers
 - [ ] gitnexus_detect_changes() — verify affected scope
@@ -73,7 +73,7 @@ gitnexus_rename({symbol_name: "validateUser", new_name: "authenticateUser", dry_
 **gitnexus_impact** — map all dependents first:
 
 ```
-gitnexus_impact({target: "validateUser", direction: "upstream"})
+gitnexus_impact({target: "validateUser", direction: "upstream", repo: "<absolute-worktree>"})
 → d=1: loginHandler, apiMiddleware, testUtils
 → Affected Processes: LoginFlow, TokenRefresh
 ```
