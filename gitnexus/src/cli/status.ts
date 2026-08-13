@@ -14,25 +14,31 @@ import {
   type IndexedRepo,
 } from '../storage/repo-manager.js';
 import { getCurrentCommit, isGitRepo, getGitRoot } from '../storage/git.js';
+import { GITNEXUS_REPO_SKILLS } from './ai-context.js';
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
 const GITNEXUS_END_MARKER = '<!-- gitnexus:end -->';
+const GITNEXUS_INDEX_COMMIT_RE = /<!-- gitnexus:index-commit:([^\s]+) -->/;
+const MANAGED_SKILLS_COMMIT_FILE = '.gitnexus-managed-commit';
+const GENERATED_SKILLS_COMMIT_FILE = '.gitnexus-generated-commit';
+const GENERATED_SKILL_PREFIX = 'gitnexus-generated-';
+const REQUIRED_REPO_SKILLS = GITNEXUS_REPO_SKILLS.map((skill) => skill.name);
 
-const fileExists = async (filePath: string): Promise<boolean> => {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-};
+type AssetFreshness = 'missing' | 'stale' | 'current';
 
-const hasGitNexusSection = async (filePath: string): Promise<boolean> => {
+const getGitNexusSectionFreshness = async (
+  filePath: string,
+  indexedCommit: string,
+): Promise<AssetFreshness> => {
   try {
     const content = await fs.readFile(filePath, 'utf-8');
-    return content.includes(GITNEXUS_START_MARKER) && content.includes(GITNEXUS_END_MARKER);
+    if (!content.includes(GITNEXUS_START_MARKER) || !content.includes(GITNEXUS_END_MARKER)) {
+      return 'missing';
+    }
+    const markerCommit = content.match(GITNEXUS_INDEX_COMMIT_RE)?.[1];
+    return markerCommit === indexedCommit ? 'current' : 'stale';
   } catch {
-    return false;
+    return 'missing';
   }
 };
 
@@ -61,25 +67,95 @@ const getVectorSearchStatus = (repo: IndexedRepo): string => {
   return embeddings > 0 ? 'unknown' : 'unavailable';
 };
 
-const getFtsStatus = (repo: IndexedRepo): string => repo.meta.capabilities?.fts?.status ?? 'unknown';
+const getFtsStatus = (repo: IndexedRepo): string =>
+  repo.meta.capabilities?.fts?.status ?? 'unknown';
 
-const hasRepoLocalSkills = async (repoPath: string): Promise<boolean> => {
-  return (
-    (await fileExists(path.join(repoPath, '.claude', 'skills', 'gitnexus'))) ||
-    (await fileExists(path.join(repoPath, '.claude', 'skills', 'generated')))
-  );
+const readCommitMarkerFreshness = async (
+  markerPath: string,
+  indexedCommit: string,
+): Promise<'stale' | 'current'> => {
+  try {
+    const marker = (await fs.readFile(markerPath, 'utf-8')).trim();
+    return marker === indexedCommit ? 'current' : 'stale';
+  } catch {
+    return 'stale';
+  }
 };
 
-const formatAgentHelpers = async (repoPath: string): Promise<{ line: string; missing: boolean }> => {
-  const agents = await hasGitNexusSection(path.join(repoPath, 'AGENTS.md'));
-  const claude = await hasGitNexusSection(path.join(repoPath, 'CLAUDE.md'));
-  const skills = await hasRepoLocalSkills(repoPath);
+const getManagedSkillsFreshness = async (
+  repoPath: string,
+  indexedCommit: string,
+): Promise<AssetFreshness> => {
+  const skillsDir = path.join(repoPath, '.agents', 'skills');
+  try {
+    const fixedSkillFiles = await Promise.all(
+      REQUIRED_REPO_SKILLS.map(async (skillName) => {
+        try {
+          return (await fs.stat(path.join(skillsDir, skillName, 'SKILL.md'))).isFile();
+        } catch {
+          return false;
+        }
+      }),
+    );
+    if (fixedSkillFiles.some((present) => !present)) return 'missing';
+    return readCommitMarkerFreshness(
+      path.join(skillsDir, MANAGED_SKILLS_COMMIT_FILE),
+      indexedCommit,
+    );
+  } catch {
+    return 'missing';
+  }
+};
+
+type GeneratedSkillsFreshness = AssetFreshness | 'not-generated';
+
+const getGeneratedSkillsFreshness = async (
+  repoPath: string,
+  indexedCommit: string,
+): Promise<GeneratedSkillsFreshness> => {
+  const skillsDir = path.join(repoPath, '.agents', 'skills');
+  try {
+    const entries = await fs.readdir(skillsDir, { withFileTypes: true });
+    const generatedSkills = entries.filter(
+      (entry) => entry.isDirectory() && entry.name.startsWith(GENERATED_SKILL_PREFIX),
+    );
+    if (generatedSkills.length === 0) return 'not-generated';
+
+    const skillFiles = await Promise.all(
+      generatedSkills.map(async (entry) => {
+        try {
+          return (await fs.stat(path.join(skillsDir, entry.name, 'SKILL.md'))).isFile();
+        } catch {
+          return false;
+        }
+      }),
+    );
+    if (skillFiles.some((present) => !present)) return 'missing';
+    return readCommitMarkerFreshness(
+      path.join(skillsDir, GENERATED_SKILLS_COMMIT_FILE),
+      indexedCommit,
+    );
+  } catch {
+    return 'not-generated';
+  }
+};
+
+const formatAgentHelpers = async (
+  repoPath: string,
+  indexedCommit: string,
+): Promise<{ line: string; needsRefresh: boolean }> => {
+  const agents = await getGitNexusSectionFreshness(path.join(repoPath, 'AGENTS.md'), indexedCommit);
+  const managedSkills = await getManagedSkillsFreshness(repoPath, indexedCommit);
+  const generatedSkills = await getGeneratedSkillsFreshness(repoPath, indexedCommit);
 
   return {
-    line: `Agent helpers: AGENTS.md ${agents ? 'present' : 'missing'}, CLAUDE.md ${
-      claude ? 'present' : 'missing'
-    }, skills ${skills ? 'present' : 'missing'}`,
-    missing: !agents || !claude || !skills,
+    line:
+      `Agent helpers: AGENTS.md ${agents}, managed skills ${managedSkills}, ` +
+      `generated skills ${generatedSkills}`,
+    needsRefresh:
+      agents !== 'current' ||
+      managedSkills !== 'current' ||
+      (generatedSkills !== 'current' && generatedSkills !== 'not-generated'),
   };
 };
 
@@ -92,7 +168,7 @@ const printEnrichmentStatus = async (repo: IndexedRepo, isUpToDate: boolean) => 
   console.log(`Vector search: ${getVectorSearchStatus(repo)}`);
   console.log(`FTS: ${getFtsStatus(repo)}`);
 
-  const helpers = await formatAgentHelpers(repo.repoPath);
+  const helpers = await formatAgentHelpers(repo.repoPath, repo.meta.lastCommit);
   console.log(helpers.line);
 
   const analyzePrefix = isUpToDate ? 'gitnexus analyze --force' : 'gitnexus analyze';
@@ -108,9 +184,9 @@ const printEnrichmentStatus = async (repo: IndexedRepo, isUpToDate: boolean) => 
     );
   }
 
-  if (helpers.missing) {
+  if (helpers.needsRefresh) {
     console.log(
-      `Recommendation: run ${analyzePrefix} --skills if you want repo-local AGENTS/CLAUDE/.claude helper files for non-Hermes agents.`,
+      `Recommendation: run ${analyzePrefix} --skills to refresh repo-local AGENTS.md and .agents/skills helpers.`,
     );
   }
 };

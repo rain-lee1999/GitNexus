@@ -1,7 +1,7 @@
 /**
  * Setup Command
  *
- * One-time global MCP configuration writer.
+ * One-time MCP configuration writer (global by default, project-scoped for Codex on request).
  * Detects installed AI editors and writes the appropriate MCP config
  * so the GitNexus MCP server is available in all projects.
  */
@@ -12,14 +12,38 @@ import os from 'os';
 import { execFile, execFileSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 import { glob } from 'glob';
 import { parseTree, modify, applyEdits, ParseError, parse as parseJsonc } from 'jsonc-parser';
 import { getGlobalDir } from '../storage/repo-manager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const require = createRequire(import.meta.url);
+const packageVersion: string = require('../../package.json').version;
 const execFileAsync = promisify(execFile);
 const EXTERNAL_COMMAND_TIMEOUT_MS = 60_000;
+export const CODEX_PLUGIN_ID = 'gitnexus@gitnexus';
+
+export type CodexScope = 'user' | 'project';
+
+export interface SetupOptions {
+  codexScope?: string;
+  projectRoot?: string;
+}
+
+export interface McpEntry {
+  command: string;
+  args: string[];
+}
+
+export interface CodexSetupPaths {
+  scope: CodexScope;
+  codexHome: string;
+  configPath: string;
+  skillsDir: string;
+  projectRoot?: string;
+}
 
 async function execFileWithInput(
   command: string,
@@ -72,10 +96,45 @@ async function execFileWithInput(
   });
 }
 
-interface SetupResult {
+export interface SetupResult {
   configured: string[];
   skipped: string[];
+  warnings: string[];
   errors: string[];
+}
+
+function getUserHome(): string {
+  return process.env.HOME?.trim() || process.env.USERPROFILE?.trim() || os.homedir();
+}
+
+export function getCodexHome(): string {
+  return process.env.CODEX_HOME?.trim() || path.join(getUserHome(), '.codex');
+}
+
+export function resolveCodexSetupPaths(options: SetupOptions = {}): CodexSetupPaths {
+  const scope = options.codexScope ?? 'user';
+  if (scope !== 'user' && scope !== 'project') {
+    throw new Error(`Invalid Codex scope "${scope}". Expected "user" or "project".`);
+  }
+
+  const codexHome = getCodexHome();
+  if (scope === 'project') {
+    const projectRoot = path.resolve(options.projectRoot || process.cwd());
+    return {
+      scope,
+      codexHome,
+      projectRoot,
+      configPath: path.join(projectRoot, '.codex', 'config.toml'),
+      skillsDir: path.join(projectRoot, '.agents', 'skills'),
+    };
+  }
+
+  return {
+    scope,
+    codexHome,
+    configPath: path.join(codexHome, 'config.toml'),
+    skillsDir: path.join(getUserHome(), '.agents', 'skills'),
+  };
 }
 
 /**
@@ -99,20 +158,36 @@ function resolveCommandBin(commandName: string): string | null {
 }
 
 function resolveGitnexusBin(): string | null {
-  return resolveCommandBin('gitnexus');
+  const resolved = resolveCommandBin('gitnexus');
+  if (!resolved) return null;
+
+  // `npx gitnexus setup` injects an ephemeral `_npx/.../node_modules/.bin`
+  // directory into PATH. Persisting that path works only until npm cleans its
+  // cache. Project-local bins and system temp paths have the same problem.
+  const normalized = resolved.replace(/\\/g, '/');
+  const normalizedLower = normalized.toLowerCase();
+  const tempRoot = path.resolve(os.tmpdir()).replace(/\\/g, '/').toLowerCase();
+  const isAbsolute = path.isAbsolute(resolved) || /^[a-z]:\//i.test(normalized);
+  const isEphemeral =
+    normalizedLower.includes('/_npx/') ||
+    normalizedLower.includes('/node_modules/.bin/') ||
+    normalizedLower === tempRoot ||
+    normalizedLower.startsWith(`${tempRoot}/`);
+
+  return isAbsolute && !isEphemeral ? resolved : null;
 }
 
 /**
  * The MCP server entry for all editors.
  *
  * Prefers the globally-installed `gitnexus` binary (starts in ~1 s) over
- * `npx -y gitnexus@latest` (cold-cache install of native deps can take
+ * a version-pinned `npx -y gitnexus@<current>` (cold-cache install of native deps can take
  * >60 s, exceeding Claude Code's 30 s MCP connection timeout).
  *
  * Falls back to npx when the binary isn't on PATH — e.g. first-time
  * users who ran `npx gitnexus analyze` but haven't done `npm i -g`.
  */
-function getMcpEntry() {
+export function getMcpEntry(): McpEntry {
   const bin = resolveGitnexusBin();
 
   if (bin) {
@@ -123,12 +198,12 @@ function getMcpEntry() {
   if (process.platform === 'win32') {
     return {
       command: 'cmd',
-      args: ['/c', 'npx', '-y', 'gitnexus@latest', 'mcp'],
+      args: ['/c', 'npx', '-y', `gitnexus@${packageVersion}`, 'mcp'],
     };
   }
   return {
     command: 'npx',
-    args: ['-y', 'gitnexus@latest', 'mcp'],
+    args: ['-y', `gitnexus@${packageVersion}`, 'mcp'],
   };
 }
 
@@ -144,9 +219,12 @@ function getOpenCodeMcpEntry() {
   }
 
   if (process.platform === 'win32') {
-    return { type: 'local', command: ['cmd', '/c', 'npx', '-y', 'gitnexus@latest', 'mcp'] };
+    return {
+      type: 'local',
+      command: ['cmd', '/c', 'npx', '-y', `gitnexus@${packageVersion}`, 'mcp'],
+    };
   }
-  return { type: 'local', command: ['npx', '-y', 'gitnexus@latest', 'mcp'] };
+  return { type: 'local', command: ['npx', '-y', `gitnexus@${packageVersion}`, 'mcp'] };
 }
 
 /**
@@ -206,6 +284,15 @@ async function dirExists(dirPath: string): Promise<boolean> {
   try {
     const stat = await fs.stat(dirPath);
     return stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(filePath);
+    return stat.isFile();
   } catch {
     return false;
   }
@@ -483,20 +570,63 @@ async function setupOpenCode(result: SetupResult): Promise<void> {
   }
 }
 
-/**
- * Build a TOML section for Codex MCP config (~/.codex/config.toml).
- */
-function getCodexMcpTomlSection(): string {
-  const entry = getMcpEntry();
-  const command = JSON.stringify(entry.command);
-  const args = `[${entry.args.map((arg) => JSON.stringify(arg)).join(', ')}]`;
-  return `[mcp_servers.gitnexus]\ncommand = ${command}\nargs = ${args}\n`;
+function quoteTomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function formatTomlArray(values: string[]): string {
+  return `[${values.map(quoteTomlString).join(', ')}]`;
+}
+
+interface TomlSectionRange {
+  start: number;
+  end: number;
+  bodyStart: number;
+}
+
+function findTomlSection(raw: string, sectionName: string): TomlSectionRange | null {
+  const lines = raw.split(/(?<=\n)/);
+  let offset = 0;
+  let start = -1;
+  let bodyStart = -1;
+
+  for (const line of lines) {
+    const header = line.match(/^\s*\[\[?([^\]]+)\]\]?\s*(?:#.*)?(?:\r?\n)?$/);
+    if (header) {
+      if (start !== -1) return { start, end: offset, bodyStart };
+      const currentName = header[1].trim();
+      const isTarget =
+        currentName === sectionName ||
+        currentName === 'mcp_servers."gitnexus"' ||
+        currentName === "mcp_servers.'gitnexus'";
+      if (isTarget) {
+        start = offset;
+        bodyStart = offset + line.length;
+      }
+    }
+    offset += line.length;
+  }
+
+  return start === -1 ? null : { start, end: raw.length, bodyStart };
+}
+
+function upsertTomlKey(sectionBody: string, key: string, formattedValue: string): string {
+  const pattern = new RegExp(`^(\\s*)${key}\\s*=.*$`, 'm');
+  const replacement = `$1${key} = ${formattedValue}`;
+  if (pattern.test(sectionBody)) return sectionBody.replace(pattern, replacement);
+
+  const newline = sectionBody.length === 0 || sectionBody.endsWith('\n') ? '' : '\n';
+  return `${sectionBody}${newline}${key} = ${formattedValue}\n`;
 }
 
 /**
- * Append GitNexus MCP server config to Codex's config.toml if missing.
+ * Update only command/args in the GitNexus TOML table. Other fields and tables
+ * are preserved byte-for-byte so user policy such as enabled_tools survives.
  */
-async function upsertCodexConfigToml(configPath: string): Promise<void> {
+export async function upsertCodexConfigToml(
+  configPath: string,
+  entry: McpEntry = getMcpEntry(),
+): Promise<void> {
   let existing = '';
   try {
     existing = await fs.readFile(configPath, 'utf-8');
@@ -504,39 +634,208 @@ async function upsertCodexConfigToml(configPath: string): Promise<void> {
     existing = '';
   }
 
-  if (existing.includes('[mcp_servers.gitnexus]')) {
-    return;
-  }
+  const sectionName = 'mcp_servers.gitnexus';
+  const range = findTomlSection(existing, sectionName);
+  const command = quoteTomlString(entry.command);
+  const args = formatTomlArray(entry.args);
+  let nextContent: string;
 
-  const section = getCodexMcpTomlSection();
-  const nextContent = existing.trim().length > 0 ? `${existing.trimEnd()}\n\n${section}` : section;
+  if (range) {
+    const prefix = existing.slice(0, range.bodyStart);
+    const suffix = existing.slice(range.end);
+    let body = existing.slice(range.bodyStart, range.end);
+    body = upsertTomlKey(body, 'command', command);
+    body = upsertTomlKey(body, 'args', args);
+    nextContent = `${prefix}${body}${suffix}`;
+  } else {
+    const section = `[${sectionName}]\ncommand = ${command}\nargs = ${args}\n`;
+    nextContent = existing.trim().length > 0 ? `${existing.trimEnd()}\n\n${section}` : section;
+  }
 
   await fs.mkdir(path.dirname(configPath), { recursive: true });
   await fs.writeFile(configPath, `${nextContent.trimEnd()}\n`, 'utf-8');
 }
 
-async function setupCodex(result: SetupResult): Promise<void> {
-  const codexDir = path.join(os.homedir(), '.codex');
-  if (!(await dirExists(codexDir))) {
-    result.skipped.push('Codex (not installed)');
-    return;
-  }
-
+/** Remove a legacy user-level GitNexus MCP table after the Codex plugin is installed. */
+export async function removeCodexMcpConfigToml(configPath: string): Promise<boolean> {
+  let existing: string;
   try {
-    const entry = getMcpEntry();
-    await execFileAsync('codex', ['mcp', 'add', 'gitnexus', '--', entry.command, ...entry.args], {
-      shell: process.platform === 'win32',
-    });
-    result.configured.push('Codex');
-    return;
+    existing = await fs.readFile(configPath, 'utf-8');
   } catch {
-    // Fallback for environments where `codex` binary isn't on PATH.
+    return false;
+  }
+
+  const range = findTomlSection(existing, 'mcp_servers.gitnexus');
+  if (!range) return false;
+
+  const nextContent = `${existing.slice(0, range.start)}${existing.slice(range.end)}`;
+  await fs.writeFile(
+    configPath,
+    nextContent.trim().length > 0 ? `${nextContent.trimEnd()}\n` : '',
+    'utf-8',
+  );
+  return true;
+}
+
+export function getCodexPluginBundlePath(): string {
+  return path.resolve(__dirname, '..', '..', 'codex-plugin');
+}
+
+async function codexPluginBundleExists(): Promise<boolean> {
+  const bundle = getCodexPluginBundlePath();
+  return (
+    (await fileExists(path.join(bundle, '.agents', 'plugins', 'marketplace.json'))) &&
+    (await fileExists(path.join(bundle, '.codex-plugin', 'plugin.json')))
+  );
+}
+
+async function configureCodexPlugin(codexBin: string): Promise<void> {
+  if (!(await codexPluginBundleExists())) {
+    throw new Error('bundled Codex plugin marketplace is missing');
+  }
+
+  const commandOptions = {
+    shell: process.platform === 'win32',
+    timeout: EXTERNAL_COMMAND_TIMEOUT_MS,
+  };
+  const bundlePath = await fs.realpath(getCodexPluginBundlePath());
+  const { stdout } = await execFileAsync(
+    codexBin,
+    ['plugin', 'marketplace', 'list', '--json'],
+    commandOptions,
+  );
+  const listed = JSON.parse(stdout);
+  const existing = listed?.marketplaces?.find(
+    (marketplace: any) => marketplace?.name === 'gitnexus',
+  );
+  if (existing) {
+    const configuredSource = existing?.marketplaceSource?.source ?? existing?.root;
+    let configuredPath = configuredSource ? path.resolve(configuredSource) : '';
+    if (configuredPath) {
+      try {
+        configuredPath = await fs.realpath(configuredPath);
+      } catch {
+        // An old npm cache path may already be gone; its resolved spelling is
+        // still sufficient to distinguish it from the current bundle.
+      }
+    }
+    if (existing?.marketplaceSource?.sourceType !== 'local' || configuredPath !== bundlePath) {
+      await execFileAsync(
+        codexBin,
+        ['plugin', 'marketplace', 'remove', 'gitnexus', '--json'],
+        commandOptions,
+      );
+    }
+  }
+  await execFileAsync(
+    codexBin,
+    ['plugin', 'marketplace', 'add', bundlePath, '--json'],
+    commandOptions,
+  );
+  await execFileAsync(codexBin, ['plugin', 'add', CODEX_PLUGIN_ID, '--json'], commandOptions);
+}
+
+export async function getCodexPluginMcpEntry(): Promise<McpEntry> {
+  const manifestPath = path.join(getCodexPluginBundlePath(), '.mcp.json');
+  const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+  const entry = manifest?.gitnexus;
+  if (typeof entry?.command !== 'string' || !Array.isArray(entry?.args)) {
+    throw new Error('bundled Codex plugin has an invalid .mcp.json entry');
+  }
+  return { command: entry.command, args: entry.args };
+}
+
+async function verifyCodexMcpRegistration(
+  codexBin: string,
+  expected: McpEntry,
+  cwd?: string,
+): Promise<void> {
+  const { stdout } = await execFileAsync(codexBin, ['mcp', 'get', 'gitnexus', '--json'], {
+    shell: process.platform === 'win32',
+    timeout: EXTERNAL_COMMAND_TIMEOUT_MS,
+    ...(cwd ? { cwd } : {}),
+  });
+  const parsed = JSON.parse(stdout);
+  const actualArgs = parsed?.transport?.args;
+  const matchesExpected =
+    parsed?.transport?.command === expected.command &&
+    Array.isArray(actualArgs) &&
+    actualArgs.length === expected.args.length &&
+    actualArgs.every((arg: string, index: number) => arg === expected.args[index]);
+  if (
+    parsed?.name !== 'gitnexus' ||
+    parsed?.enabled === false ||
+    parsed?.transport?.type !== 'stdio' ||
+    !matchesExpected
+  ) {
+    throw new Error('codex mcp get returned an invalid or disabled GitNexus registration');
+  }
+}
+
+async function setupCodex(result: SetupResult, paths: CodexSetupPaths): Promise<void> {
+  const codexBin = resolveCommandBin('codex');
+  const entry = getMcpEntry();
+
+  if (codexBin) {
+    try {
+      // Codex rejects a configured CODEX_HOME when the directory itself does
+      // not exist, even for read-only commands such as plugin marketplace list.
+      await fs.mkdir(paths.codexHome, { recursive: true });
+    } catch (err: any) {
+      result.errors.push(`Codex: cannot create ${paths.codexHome} (${err.message})`);
+      return;
+    }
+  }
+
+  if (codexBin && paths.scope === 'user') {
+    try {
+      await configureCodexPlugin(codexBin);
+      // A legacy user table shadows plugin-provided MCP servers with the same
+      // name. Remove that exact table so the plugin is the single source.
+      await removeCodexMcpConfigToml(paths.configPath);
+      await verifyCodexMcpRegistration(codexBin, await getCodexPluginMcpEntry());
+      result.configured.push('Codex plugin (hooks, workflow skill, MCP)');
+      return;
+    } catch (err: any) {
+      result.warnings.push(
+        `Codex plugin unavailable (${err.message}); falling back to direct MCP configuration`,
+      );
+    }
+
+    try {
+      await execFileAsync(
+        codexBin,
+        ['mcp', 'add', 'gitnexus', '--', entry.command, ...entry.args],
+        { shell: process.platform === 'win32', timeout: EXTERNAL_COMMAND_TIMEOUT_MS },
+      );
+      await verifyCodexMcpRegistration(codexBin, entry);
+      result.configured.push('Codex (direct MCP fallback)');
+      return;
+    } catch (err: any) {
+      result.warnings.push(
+        `Codex CLI MCP setup failed (${err.message}); falling back to ${paths.configPath}`,
+      );
+    }
+  }
+
+  if (!codexBin && paths.scope === 'user') {
+    result.warnings.push(
+      'Codex CLI was not found; installed direct MCP config and detailed skills, but plugin hooks could not be enabled',
+    );
   }
 
   try {
-    const configPath = path.join(codexDir, 'config.toml');
-    await upsertCodexConfigToml(configPath);
-    result.configured.push('Codex (MCP added to ~/.codex/config.toml)');
+    await upsertCodexConfigToml(paths.configPath, entry);
+    result.configured.push(`Codex (${paths.scope} MCP config → ${paths.configPath})`);
+    if (codexBin) {
+      try {
+        await verifyCodexMcpRegistration(codexBin, entry, paths.projectRoot);
+      } catch (err: any) {
+        result.warnings.push(
+          `Codex MCP config was written but not active in codex mcp get (${err.message})${paths.scope === 'project' ? '; trust the project to load .codex/config.toml' : ''}`,
+        );
+      }
+    }
   } catch (err: any) {
     result.errors.push(`Codex: ${err.message}`);
   }
@@ -717,18 +1016,15 @@ async function installOpenCodeSkills(result: SetupResult): Promise<void> {
 }
 
 /**
- * Install global Codex skills to ~/.agents/skills/gitnexus/
+ * Install Codex skills as direct ~/.agents/skills/gitnexus-* children (or the
+ * equivalent project-scoped .agents/skills directory).
  */
-async function installCodexSkills(result: SetupResult): Promise<void> {
-  const codexDir = path.join(os.homedir(), '.codex');
-  if (!(await dirExists(codexDir))) return;
-
-  const skillsDir = path.join(os.homedir(), '.agents', 'skills');
+async function installCodexSkills(result: SetupResult, paths: CodexSetupPaths): Promise<void> {
   try {
-    const installed = await installSkillsTo(skillsDir);
+    const installed = await installSkillsTo(paths.skillsDir);
     if (installed.installed.length > 0) {
       result.configured.push(
-        `Codex skills (${installed.installed.length} skills → ~/.agents/skills/)`,
+        `Codex detailed skills (${installed.installed.length} skills → ${paths.skillsDir})`,
       );
     }
   } catch (err: any) {
@@ -758,7 +1054,7 @@ async function installHermesSkills(result: SetupResult): Promise<void> {
 
 // ─── Main command ──────────────────────────────────────────────────
 
-export const setupCommand = async () => {
+export const setupCommand = async (options: SetupOptions = {}): Promise<SetupResult> => {
   console.log('');
   console.log('  GitNexus Setup');
   console.log('  ==============');
@@ -768,9 +1064,11 @@ export const setupCommand = async () => {
   const globalDir = getGlobalDir();
   await fs.mkdir(globalDir, { recursive: true });
 
+  const codexPaths = resolveCodexSetupPaths(options);
   const result: SetupResult = {
     configured: [],
     skipped: [],
+    warnings: [],
     errors: [],
   };
 
@@ -778,7 +1076,7 @@ export const setupCommand = async () => {
   await setupCursor(result);
   await setupClaudeCode(result);
   await setupOpenCode(result);
-  await setupCodex(result);
+  await setupCodex(result, codexPaths);
   await setupHermes(result);
 
   // Install global skills for platforms that support them
@@ -786,7 +1084,7 @@ export const setupCommand = async () => {
   await installClaudeCodeHooks(result);
   await installCursorSkills(result);
   await installOpenCodeSkills(result);
-  await installCodexSkills(result);
+  await installCodexSkills(result, codexPaths);
   await installHermesSkills(result);
 
   // Print results
@@ -802,6 +1100,14 @@ export const setupCommand = async () => {
     console.log('  Skipped:');
     for (const name of result.skipped) {
       console.log(`    - ${name}`);
+    }
+  }
+
+  if (result.warnings.length > 0) {
+    console.log('');
+    console.log('  Warnings:');
+    for (const warning of result.warnings) {
+      console.log(`    ! ${warning}`);
     }
   }
 
@@ -827,4 +1133,5 @@ export const setupCommand = async () => {
   console.log('    2. Run: gitnexus analyze');
   console.log('    3. Open the repo in your editor — MCP is ready!');
   console.log('');
+  return result;
 };

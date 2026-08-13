@@ -14,6 +14,41 @@ import { CommunityNode, CommunityMembership } from '../core/ingestion/community-
 import { ProcessNode } from '../core/ingestion/process-processor.js';
 import { KnowledgeGraph } from '../core/graph/types.js';
 
+const GENERATED_SKILL_PREFIX = 'gitnexus-generated-';
+const GENERATED_SKILLS_COMMIT_FILE = '.gitnexus-generated-commit';
+
+const readIndexedCommit = async (repoPath: string): Promise<string> => {
+  try {
+    const meta = JSON.parse(
+      await fs.readFile(path.join(repoPath, '.gitnexus', 'meta.json'), 'utf-8'),
+    ) as { lastCommit?: unknown };
+    return typeof meta.lastCommit === 'string' && meta.lastCommit.length > 0
+      ? meta.lastCommit
+      : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+};
+
+const prepareGeneratedSkillsDir = async (outputDir: string): Promise<void> => {
+  await fs.mkdir(outputDir, { recursive: true });
+  await fs.rm(path.join(outputDir, GENERATED_SKILLS_COMMIT_FILE), { force: true });
+
+  for (const entry of await fs.readdir(outputDir, { withFileTypes: true })) {
+    if (entry.isDirectory() && entry.name.startsWith(GENERATED_SKILL_PREFIX)) {
+      await fs.rm(path.join(outputDir, entry.name), { recursive: true, force: true });
+    }
+  }
+};
+
+const writeSkillsIndexCommit = async (outputDir: string, repoPath: string): Promise<void> => {
+  await fs.writeFile(
+    path.join(outputDir, GENERATED_SKILLS_COMMIT_FILE),
+    `${await readIndexedCommit(repoPath)}\n`,
+    'utf-8',
+  );
+};
+
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -68,10 +103,12 @@ export const generateSkillFiles = async (
   pipelineResult: PipelineResult,
 ): Promise<{ skills: GeneratedSkillInfo[]; outputPath: string }> => {
   const { communityResult, processResult, graph } = pipelineResult;
-  const outputDir = path.join(repoPath, '.claude', 'skills', 'generated');
+  const outputDir = path.join(repoPath, '.agents', 'skills');
+  await prepareGeneratedSkillsDir(outputDir);
 
   if (!communityResult || !communityResult.memberships.length) {
     console.log('\n  Skills: no communities detected, skipping skill generation');
+    await writeSkillsIndexCommit(outputDir, repoPath);
     return { skills: [], outputPath: outputDir };
   }
 
@@ -97,6 +134,7 @@ export const generateSkillFiles = async (
 
   if (significant.length === 0) {
     console.log('\n  Skills: no significant communities found (all below 3-symbol threshold)');
+    await writeSkillsIndexCommit(outputDir, repoPath);
     return { skills: [], outputPath: outputDir };
   }
 
@@ -107,15 +145,7 @@ export const generateSkillFiles = async (
     communities,
   );
 
-  // Step 4: Clear and recreate output directory
-  try {
-    await fs.rm(outputDir, { recursive: true, force: true });
-  } catch {
-    /* may not exist */
-  }
-  await fs.mkdir(outputDir, { recursive: true });
-
-  // Step 5: Generate skill files
+  // Step 4: Generate skill files
   const skills: GeneratedSkillInfo[] = [];
   const usedNames = new Set<string>();
 
@@ -143,8 +173,13 @@ export const generateSkillFiles = async (
     );
 
     // Generate kebab name
-    const kebabName = toKebabName(community.label, usedNames);
-    usedNames.add(kebabName);
+    const skillBaseName = toKebabName(
+      community.label,
+      usedNames,
+      64 - GENERATED_SKILL_PREFIX.length,
+    );
+    usedNames.add(skillBaseName);
+    const kebabName = `${GENERATED_SKILL_PREFIX}${skillBaseName}`;
 
     // Generate SKILL.md content
     const content = renderSkillMarkdown(
@@ -176,7 +211,9 @@ export const generateSkillFiles = async (
     );
   }
 
-  console.log(`\n  ${skills.length} skills generated \u2192 .claude/skills/generated/`);
+  await writeSkillsIndexCommit(outputDir, repoPath);
+
+  console.log(`\n  ${skills.length} skills generated \u2192 .agents/skills/`);
 
   return { skills, outputPath: outputDir };
 };
@@ -667,21 +704,23 @@ const renderSkillMarkdown = (
  * @brief Convert a community label to a kebab-case directory name
  * @param {string} label - The community label
  * @param {Set<string>} usedNames - Already-used names for collision detection
- * @returns {string} Unique kebab-case name capped at 50 characters
+ * @param {number} maxLength - Maximum output length before collision suffixes
+ * @returns {string} Unique kebab-case name capped at maxLength characters
  */
-const toKebabName = (label: string, usedNames: Set<string>): string => {
+const toKebabName = (label: string, usedNames: Set<string>, maxLength = 50): string => {
   let name = label
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 50);
+    .slice(0, maxLength);
 
   if (!name) name = 'skill';
 
   let candidate = name;
   let counter = 2;
   while (usedNames.has(candidate)) {
-    candidate = `${name}-${counter}`;
+    const suffix = `-${counter}`;
+    candidate = `${name.slice(0, maxLength - suffix.length)}${suffix}`;
     counter++;
   }
 

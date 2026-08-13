@@ -1,0 +1,35 @@
+{
+  "description": "GitNexus search enrichment and index-freshness checks for Codex.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/gitnexus-hook.cjs\"",
+            "commandWindows": "node \"%PLUGIN_ROOT%\\hooks\\gitnexus-hook.cjs\"",
+            "timeout": 10,
+            "statusMessage": "Enriching search with GitNexus",
+            "additionalContextLimit": 1500
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/gitnexus-hook.cjs\"",
+            "commandWindows": "node \"%PLUGIN_ROOT%\\hooks\\gitnexus-hook.cjs\"",
+            "timeout": 10,
+            "statusMessage": "Checking GitNexus index freshness",
+            "additionalContextLimit": 500
+          }
+        ]
+      }
+    ]
+  }
+}

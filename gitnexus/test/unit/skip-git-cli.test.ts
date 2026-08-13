@@ -160,7 +160,7 @@ describe('--skip-git CLI flag', () => {
       }
     });
 
-    it('keeps parent git status clean for --skip-git subdir analyze (#1233)', () => {
+    it('only adds intentional Codex assets for --skip-git subdir analyze (#1233)', () => {
       createTestStructure();
       try {
         fs.writeFileSync(path.join(parentDir, '.gitignore'), '.claude/\n');
@@ -184,7 +184,9 @@ describe('--skip-git CLI flag', () => {
           cwd: parentDir,
           encoding: 'utf8',
         });
-        expect(status).toBe('');
+        // Codex-first analysis intentionally installs repo-local skills in the
+        // indexed subdirectory, while leaving the parent and sibling untouched.
+        expect(status).toBe('?? COOLIO/.agents/\n');
       } finally {
         cleanup();
       }

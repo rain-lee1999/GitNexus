@@ -4,6 +4,17 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Codex-native integration** — a bundled local Codex marketplace/plugin now ships pinned stdio MCP configuration, a workflow skill, and trusted-on-review `PreToolUse` / `PostToolUse` hooks. MCP initialization also returns a self-contained GitNexus workflow.
+- **Codex setup diagnostics** — setup supports `CODEX_HOME` plus user/project scopes, repairs stale MCP TOML entries, and `gitnexus doctor codex` checks the CLI, plugin, skills, registration, and protocol handshake.
+
+### Changed
+
+- **Codex-first repository assets** — `analyze` writes only `AGENTS.md` and native direct-child `.agents/skills/gitnexus-*` skills. Generated skills carry index-commit freshness metadata and no longer use `.claude/skills`.
+- **Remote HTTP MCP is fail-closed** — non-loopback binds require a bearer token or an explicit insecure opt-in, expose read-only tools by default, and enforce request, rate, and session limits.
+- **MCP documentation is contract-tested** against the 13 tools exposed by the server.
+
 ## [1.6.3] - 2026-04-24
 
 ### Added

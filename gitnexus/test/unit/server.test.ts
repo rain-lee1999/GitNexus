@@ -15,7 +15,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { createMCPServer } from '../../src/mcp/server.js';
+import { createMCPServer, GITNEXUS_MCP_INSTRUCTIONS } from '../../src/mcp/server.js';
 import { GITNEXUS_TOOLS } from '../../src/mcp/tools.js';
 
 // ─── Mock backend ──────────────────────────────────────────────────
@@ -77,6 +77,83 @@ describe('createMCPServer', () => {
       await server.close();
     }
   });
+
+  it('returns self-contained workflow instructions during initialization', async () => {
+    const backend = createMockBackend();
+    const server = createMCPServer(backend);
+    const client = new Client({ name: 'codex-test-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+      expect(client.getInstructions()).toBe(GITNEXUS_MCP_INSTRUCTIONS);
+      const firstWindow = GITNEXUS_MCP_INSTRUCTIONS.slice(0, 512);
+      expect(firstWindow).toContain('query then context');
+      expect(firstWindow).toContain('impact with direction "upstream"');
+      expect(firstWindow).toContain('detect_changes');
+      expect(firstWindow).toContain('npx gitnexus analyze');
+      expect(GITNEXUS_MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(512);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('hides and rejects mutating tools when configured read-only', async () => {
+    const backend = createMockBackend();
+    const server = createMCPServer(backend, { allowMutatingTools: false });
+    const client = new Client({ name: 'read-only-test-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+      const tools = await client.listTools();
+      expect(tools.tools.every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);
+      expect(tools.tools.map((tool) => tool.name)).not.toContain('rename');
+      expect(tools.tools.map((tool) => tool.name)).not.toContain('group_sync');
+
+      const result = await client.callTool({
+        name: 'rename',
+        arguments: { new_name: 'blocked' },
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ text: expect.stringContaining('read-only') }),
+        ]),
+      );
+      expect(backend.callTool).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('preserves object tool results as structuredContent alongside text', async () => {
+    const backend = createMockBackend({
+      callTool: vi.fn().mockResolvedValue({ processes: [], risk: 'LOW' }),
+    });
+    const server = createMCPServer(backend);
+    const client = new Client({ name: 'structured-test-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      const result = await client.callTool({ name: 'query', arguments: { query: 'auth' } });
+
+      expect(result.structuredContent).toEqual({ processes: [], risk: 'LOW' });
+      expect(result.content).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ text: expect.stringContaining('"risk": "LOW"') }),
+        ]),
+      );
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
 });
 
 // ─── getNextStepHint (tested indirectly via server tool handler) ──────
@@ -90,7 +167,7 @@ describe('getNextStepHint (via tool call response)', () => {
     const backend = createMockBackend({
       callTool: vi.fn().mockResolvedValue({ processes: [], definitions: [] }),
     });
-    const server = createMCPServer(backend);
+    const _server = createMCPServer(backend);
 
     // We can't easily call handlers directly on the MCP Server,
     // so we verify the handler was registered by creating the server without error.

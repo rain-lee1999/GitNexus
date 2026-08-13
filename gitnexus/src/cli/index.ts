@@ -17,6 +17,8 @@ program.name('gitnexus').description('GitNexus local CLI and MCP server').versio
 program
   .command('setup')
   .description('One-time setup: configure MCP for Cursor, Claude Code, OpenCode, Codex, Hermes')
+  .option('--codex-scope <scope>', 'Codex setup scope: user or project', 'user')
+  .option('--project-root <path>', 'Project root for --codex-scope project (default: cwd)')
   .action(createLazyAction(() => import('./setup.js'), 'setupCommand'));
 
 program
@@ -39,8 +41,8 @@ program
       'preserves any embeddings already present in the index.',
   )
   .option('--skills', 'Generate repo-specific skill files from detected communities')
-  .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
-  .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
+  .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md')
+  .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md')
   .option(
     '--skip-git',
     'Treat the provided path/cwd as the index root and skip parent git-root discovery',
@@ -113,10 +115,17 @@ program
   .description('Show index status for current repo')
   .action(createLazyAction(() => import('./status.js'), 'statusCommand'));
 
-program
-  .command('doctor')
+const doctor = program
+  .command('doctor [target]')
   .description('Show runtime platform capabilities and embedding configuration')
+  .option('--codex-scope <scope>', 'Codex scope to inspect: user or project', 'user')
+  .option('--project-root <path>', 'Project root for --codex-scope project (default: cwd)')
   .action(createLazyAction(() => import('./doctor.js'), 'doctorCommand'));
+
+doctor.addHelpText(
+  'after',
+  '\nTargets:\n  codex  Check Codex CLI, config, skills, plugin/hooks, and MCP protocol health.\n',
+);
 
 program
   .command('clean')

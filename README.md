@@ -102,7 +102,7 @@ The CLI indexes your repository and runs an MCP server that gives AI agents deep
 npx gitnexus analyze
 ```
 
-That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files — all in one command.
+That's it. This indexes the codebase and creates Codex-native `AGENTS.md` plus repo skills under `.agents/skills/`.
 
 To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
 
@@ -112,16 +112,16 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 
 ### Editor Support
 
-| Editor                | MCP | Skills | Hooks (auto-augment) | Support        |
-| --------------------- | --- | ------ | -------------------- | -------------- |
-| **Claude Code** | Yes | Yes    | Yes (PreToolUse + PostToolUse) | **Full** |
-| **Cursor**      | Yes | Yes    | —                   | MCP + Skills   |
-| **Codex**       | Yes | Yes    | —                   | MCP + Skills   |
-| **Hermes**      | Yes | Yes    | —                   | MCP + Skills   |
-| **Windsurf**    | Yes | —     | —                   | MCP            |
-| **OpenCode**    | Yes | Yes    | —                   | MCP + Skills   |
+| Editor          | MCP | Skills | Hooks                         | Support           |
+| --------------- | --- | ------ | ----------------------------- | ----------------- |
+| **Codex**       | Yes | Yes    | PreToolUse + PostToolUse      | **Native plugin** |
+| **Cursor**      | Yes | Yes    | —                             | MCP + Skills      |
+| **Hermes**      | Yes | Yes    | —                             | MCP + Skills      |
+| **Windsurf**    | Yes | —      | —                             | MCP               |
+| **OpenCode**    | Yes | Yes    | —                             | MCP + Skills      |
+| **Claude Code** | Yes | Legacy | Legacy                        | MCP compatible    |
 
-> **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that enrich searches with graph context + PostToolUse hooks that detect a stale index after commits and prompt the agent to reindex.
+> **Codex** gets the primary integration: a version-pinned plugin bundles MCP, a workflow skill, and PreToolUse/PostToolUse hooks. Repository assets follow Codex's `AGENTS.md` and `.agents/skills/` discovery contracts; no `.claude` mirror is generated.
 
 ## Community Integrations
 
@@ -136,17 +136,14 @@ Built by the community — not officially maintained, but worth checking out.
 
 If you prefer manual configuration:
 
-**Claude Code** (full support — MCP + skills + hooks):
+**Codex** (recommended — plugin + MCP + skills + hooks):
 
 ```bash
-# macOS / Linux
-claude mcp add gitnexus -- npx -y gitnexus@latest mcp
-
-# Windows
-claude mcp add gitnexus -- cmd /c npx -y gitnexus@latest mcp
+npx gitnexus@latest setup
+# Review and trust the installed GitNexus hooks with /hooks in Codex.
 ```
 
-**Codex** (full support — MCP + skills):
+Direct MCP fallback:
 
 ```bash
 codex mcp add gitnexus -- npx -y gitnexus@latest mcp
@@ -209,12 +206,13 @@ gitnexus setup                   # Configure MCP for your editors (one-time)
 gitnexus analyze [path]          # Index a repository (or update stale index)
 gitnexus analyze --force         # Force full re-index
 gitnexus analyze --skills        # Generate repo-specific skill files from detected communities
-gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
-gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
+gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md GitNexus section edits
 gitnexus analyze --skip-git        # Index folders that are not Git repositories
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
+gitnexus setup --codex-scope project  # Write project-local Codex MCP config and skills
+gitnexus doctor codex            # Verify Codex CLI, plugin, skills, MCP config, and protocol
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI connection
 gitnexus list                    # List all indexed repositories
@@ -240,22 +238,25 @@ If `analyze` reports a worker parse timeout on a large or unusual repository, it
 
 ### What Your AI Agent Gets
 
-**16 tools** exposed via MCP (11 per-repo + 5 group):
+**13 tools** exposed via MCP (10 per-repo + repository discovery + 2 group tools):
 
+<!-- gitnexus:mcp-tools:start -->
 | Tool               | What It Does                                                      | `repo` Param |
 | ------------------ | ----------------------------------------------------------------- | -------------- |
 | `list_repos`     | Discover all indexed repositories                                 | —             |
 | `query`          | Process-grouped hybrid search (BM25 + semantic + RRF)             | Optional       |
+| `cypher`         | Read-only Cypher queries against the code graph                   | Optional       |
 | `context`        | 360-degree symbol view — categorized refs, process participation | Optional       |
-| `impact`         | Blast radius analysis with depth grouping and confidence          | Optional       |
 | `detect_changes` | Git-diff impact — maps changed lines to affected processes       | Optional       |
 | `rename`         | Multi-file coordinated rename with graph + text search            | Optional       |
-| `cypher`         | Raw Cypher graph queries                                          | Optional       |
+| `impact`         | Blast radius analysis with depth grouping and confidence          | Optional       |
+| `route_map`      | Map API routes to handlers, middleware, and consumers             | Optional       |
+| `tool_map`       | Map MCP/RPC tools to definitions and handlers                     | Optional       |
+| `shape_check`    | Detect API response/consumer shape drift                          | Optional       |
+| `api_impact`     | Pre-change impact report for an API route                         | Optional       |
 | `group_list`     | List configured repository groups                                 | —             |
 | `group_sync`     | Extract contracts and match across repos/services                 | —             |
-| `group_contracts`| Inspect extracted contracts and cross-links                       | —             |
-| `group_query`    | Search execution flows across all repos in a group                | —             |
-| `group_status`   | Check staleness of repos in a group                               | —             |
+<!-- gitnexus:mcp-tools:end -->
 
 > When only one repo is indexed, the `repo` parameter is optional. With multiple repos, specify which one: `query({query: "auth", repo: "my-app"})`.
 
@@ -278,16 +279,19 @@ If `analyze` reports a worker parse timeout on a large or unusual repository, it
 | `detect_impact` | Pre-commit change analysis — scope, affected processes, risk level       |
 | `generate_map`  | Architecture documentation from the knowledge graph with mermaid diagrams |
 
-**4 agent skills** installed to `.claude/skills/` automatically:
+**7 agent skills** installed as direct children of `.agents/skills/` for native Codex discovery:
 
 - **Exploring** — Navigate unfamiliar code using the knowledge graph
 - **Debugging** — Trace bugs through call chains
 - **Impact Analysis** — Analyze blast radius before changes
 - **Refactoring** — Plan safe refactors using dependency mapping
+- **PR Review** — Review changes with graph-backed impact evidence
+- **Guide** — Reference the complete MCP surface and workflows
+- **CLI** — Operate indexing, status, cleanup, and wiki commands
 
 **Repo-specific skills** generated with `--skills`:
 
-When you run `gitnexus analyze --skills`, GitNexus detects the functional areas of your codebase (via Leiden community detection) and generates a `SKILL.md` file for each one under `.claude/skills/generated/`. Each skill describes a module's key files, entry points, execution flows, and cross-area connections — so your AI agent gets targeted context for the exact area of code you're working in. Skills are regenerated on each `--skills` run to stay current with the codebase.
+When you run `gitnexus analyze --skills`, GitNexus detects the functional areas of your codebase (via Leiden community detection) and generates one direct Codex skill per area under `.agents/skills/gitnexus-generated-*/`. Each skill describes a module's key files, entry points, execution flows, and cross-area connections. GitNexus-owned generated skills are replaced on each `--skills` run; unrelated skills are left untouched.
 
 ---
 
@@ -357,6 +361,16 @@ npm run dev
 # Then in another terminal, start the backend the frontend connects to:
 npx gitnexus@latest serve
 ```
+
+### HTTP MCP security
+
+The stdio MCP installed by `gitnexus setup` remains local. For `gitnexus serve`, `/api/mcp` is open without authentication only on a loopback bind. A non-loopback bind (including Docker's `0.0.0.0`) disables remote MCP until a bearer token is configured:
+
+```bash
+GITNEXUS_MCP_TOKEN='replace-with-a-long-random-token' gitnexus serve --host 0.0.0.0
+```
+
+Remote HTTP MCP is read-only by default. Set `GITNEXUS_MCP_ALLOW_MUTATIONS=1` only when remote clients must use `rename` or `group_sync`. `GITNEXUS_MCP_INSECURE=1` explicitly permits unauthenticated remote access and is intended only for an already-isolated network.
 
 ## Docker
 
@@ -760,7 +774,7 @@ The wiki generator reads the indexed graph structure, groups files into modules 
 
 - [X] Constructor-Inferred Type Resolution, `self`/`this` Receiver Mapping
 - [X] Wiki Generation, Multi-File Rename, Git-Diff Impact Analysis
-- [X] Process-Grouped Search, 360-Degree Context, Claude Code Hooks
+- [X] Process-Grouped Search, 360-Degree Context, Codex Hooks
 - [X] Multi-Repo MCP, Zero-Config Setup, 14 Language Support
 - [X] Community Detection, Process Detection, Confidence Scoring
 - [X] Hybrid Search, Vector Index

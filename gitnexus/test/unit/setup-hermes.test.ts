@@ -37,6 +37,7 @@ describe('setupCommand Hermes support', () => {
   let tempHome: string;
   let originalHome: string | undefined;
   let originalUserProfile: string | undefined;
+  let originalCodexHome: string | undefined;
   let platformDescriptor: PropertyDescriptor | undefined;
 
   const setPlatform = (value: NodeJS.Platform) => {
@@ -52,9 +53,11 @@ describe('setupCommand Hermes support', () => {
 
     originalHome = process.env.HOME;
     originalUserProfile = process.env.USERPROFILE;
+    originalCodexHome = process.env.CODEX_HOME;
     tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-hermes-setup-'));
     process.env.HOME = tempHome;
     process.env.USERPROFILE = tempHome;
+    delete process.env.CODEX_HOME;
 
     platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
     setPlatform('darwin');
@@ -70,6 +73,8 @@ describe('setupCommand Hermes support', () => {
 
     process.env.HOME = originalHome;
     process.env.USERPROFILE = originalUserProfile;
+    if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = originalCodexHome;
     await fs.rm(tempHome, { recursive: true, force: true });
   });
 
@@ -101,7 +106,7 @@ describe('setupCommand Hermes support', () => {
 
     expect(spawnMock).toHaveBeenCalledWith(
       '/usr/local/bin/hermes',
-      ['mcp', 'add', 'gitnexus', '--command', 'npx', '--args', '-y', 'gitnexus@latest', 'mcp'],
+      ['mcp', 'add', 'gitnexus', '--command', 'npx', '--args', '-y', 'gitnexus@1.6.3', 'mcp'],
       { shell: false, stdio: ['pipe', 'pipe', 'pipe'] },
     );
     expect(spawnMock.mock.results[0].value.stdin.end).toHaveBeenCalledWith('Y\n');
@@ -153,7 +158,7 @@ describe('setupCommand Hermes support', () => {
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('preserved existing'));
   });
 
-  it('does not create other editor config files during Hermes-only setup', async () => {
+  it('does not create configs for undetected editors while still configuring Codex', async () => {
     await fs.mkdir(path.join(tempHome, '.hermes'), { recursive: true });
 
     const { setupCommand } = await import('../../src/cli/setup.js');
@@ -161,7 +166,7 @@ describe('setupCommand Hermes support', () => {
 
     await expect(fs.access(path.join(tempHome, '.claude.json'))).rejects.toThrow();
     await expect(fs.access(path.join(tempHome, '.cursor'))).rejects.toThrow();
-    await expect(fs.access(path.join(tempHome, '.codex'))).rejects.toThrow();
+    await expect(fs.access(path.join(tempHome, '.codex', 'config.toml'))).resolves.toBeUndefined();
     await expect(fs.access(path.join(tempHome, '.config', 'opencode'))).rejects.toThrow();
   });
 });

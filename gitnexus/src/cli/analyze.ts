@@ -104,9 +104,9 @@ export interface AnalyzeOptions {
   dropEmbeddings?: boolean;
   skills?: boolean;
   verbose?: boolean;
-  /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
+  /** Skip the GitNexus-managed AGENTS.md block update. */
   skipAgentsMd?: boolean;
-  /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
+  /** Omit volatile symbol/relationship counts from AGENTS.md. */
   noStats?: boolean;
   /** Index the folder even when no .git directory is present. */
   skipGit?: boolean;

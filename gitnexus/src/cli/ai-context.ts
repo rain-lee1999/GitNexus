@@ -1,9 +1,8 @@
 /**
  * AI Context Generator
  *
- * Creates AGENTS.md and CLAUDE.md with full inline GitNexus context.
- * AGENTS.md is the standard read by Cursor, Windsurf, OpenCode, Codex, Cline, etc.
- * CLAUDE.md is for Claude Code which only reads that file.
+ * Creates AGENTS.md with inline GitNexus context and installs repo-scoped
+ * Codex skills under .agents/skills/.
  */
 
 import fs from 'fs/promises';
@@ -31,6 +30,58 @@ export interface AIContextOptions {
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
 const GITNEXUS_END_MARKER = '<!-- gitnexus:end -->';
+const GITNEXUS_INDEX_COMMIT_PREFIX = '<!-- gitnexus:index-commit:';
+const MANAGED_SKILLS_COMMIT_FILE = '.gitnexus-managed-commit';
+
+export const GITNEXUS_REPO_SKILLS = [
+  {
+    name: 'gitnexus-exploring',
+    description:
+      'Use when the user asks how code works, wants to understand architecture, trace execution flows, or explore unfamiliar parts of the codebase. Examples: "How does X work?", "What calls this function?", "Show me the auth flow"',
+  },
+  {
+    name: 'gitnexus-debugging',
+    description:
+      'Use when the user is debugging a bug, tracing an error, or asking why something fails. Examples: "Why is X failing?", "Where does this error come from?", "Trace this bug"',
+  },
+  {
+    name: 'gitnexus-impact-analysis',
+    description:
+      'Use when the user wants to know what will break if they change something, or needs safety analysis before editing code. Examples: "Is it safe to change X?", "What depends on this?", "What will break?"',
+  },
+  {
+    name: 'gitnexus-refactoring',
+    description:
+      'Use when the user wants to rename, extract, split, move, or restructure code safely. Examples: "Rename this function", "Extract this into a module", "Refactor this class", "Move this to a separate file"',
+  },
+  {
+    name: 'gitnexus-pr-review',
+    description:
+      'Use when reviewing a pull request or code changes and you need impact analysis, regression risk, or call-graph context. Examples: "Review this PR", "Check these changes", "What could regress?"',
+  },
+  {
+    name: 'gitnexus-guide',
+    description:
+      'Use when the user asks about GitNexus itself — available tools, how to query the knowledge graph, MCP resources, graph schema, or workflow reference. Examples: "What GitNexus tools are available?", "How do I use GitNexus?"',
+  },
+  {
+    name: 'gitnexus-cli',
+    description:
+      'Use when the user needs to run GitNexus CLI commands like analyze/index a repo, check status, clean the index, generate a wiki, or list indexed repos. Examples: "Index this repo", "Reanalyze the codebase", "Generate a wiki"',
+  },
+] as const;
+
+async function readIndexedCommit(storagePath: string): Promise<string | undefined> {
+  try {
+    const raw = await fs.readFile(path.join(storagePath, 'meta.json'), 'utf-8');
+    const meta = JSON.parse(raw) as { lastCommit?: unknown };
+    return typeof meta.lastCommit === 'string' && meta.lastCommit.length > 0
+      ? meta.lastCommit
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Find the index of a section marker that occupies its own line.
@@ -90,6 +141,7 @@ async function findGroupsContainingRegistryName(registryName: string): Promise<s
 function generateGitNexusContent(
   projectName: string,
   stats: RepoStats,
+  indexedCommit?: string,
   generatedSkills?: GeneratedSkillInfo[],
   groupNames?: string[],
   noStats?: boolean,
@@ -99,21 +151,23 @@ function generateGitNexusContent(
       ? generatedSkills
           .map(
             (s) =>
-              `| Work in the ${s.label} area (${s.symbolCount} symbols) | \`.claude/skills/generated/${s.name}/SKILL.md\` |`,
+              `| Work in the ${s.label} area (${s.symbolCount} symbols) | \`.agents/skills/${s.name}/SKILL.md\` |`,
           )
           .join('\n')
       : '';
 
   const skillsTable = `| Task | Read this skill file |
 |------|---------------------|
-| Understand architecture / "How does X work?" | \`.claude/skills/gitnexus/gitnexus-exploring/SKILL.md\` |
-| Blast radius / "What breaks if I change X?" | \`.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md\` |
-| Trace bugs / "Why is X failing?" | \`.claude/skills/gitnexus/gitnexus-debugging/SKILL.md\` |
-| Rename / extract / split / refactor | \`.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md\` |
-| Tools, resources, schema reference | \`.claude/skills/gitnexus/gitnexus-guide/SKILL.md\` |
-| Index, status, clean, wiki CLI commands | \`.claude/skills/gitnexus/gitnexus-cli/SKILL.md\` |${generatedRows ? '\n' + generatedRows : ''}`;
+| Understand architecture / "How does X work?" | \`.agents/skills/gitnexus-exploring/SKILL.md\` |
+| Blast radius / "What breaks if I change X?" | \`.agents/skills/gitnexus-impact-analysis/SKILL.md\` |
+| Trace bugs / "Why is X failing?" | \`.agents/skills/gitnexus-debugging/SKILL.md\` |
+| Rename / extract / split / refactor | \`.agents/skills/gitnexus-refactoring/SKILL.md\` |
+| Review a pull request or code changes | \`.agents/skills/gitnexus-pr-review/SKILL.md\` |
+| Tools, resources, schema reference | \`.agents/skills/gitnexus-guide/SKILL.md\` |
+| Index, status, clean, wiki CLI commands | \`.agents/skills/gitnexus-cli/SKILL.md\` |${generatedRows ? '\n' + generatedRows : ''}`;
 
   return `${GITNEXUS_START_MARKER}
+${GITNEXUS_INDEX_COMMIT_PREFIX}${indexedCommit ?? 'unknown'} -->
 # GitNexus — Code Intelligence
 
 This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}. Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
@@ -192,10 +246,9 @@ async function upsertGitNexusSection(
 
   // Check if GitNexus section already exists. Matching is restricted
   // to markers that occupy their own line so that inline prose
-  // references (e.g. `` See the `<!-- gitnexus:start -->` block `` in
-  // the shipped CLAUDE.md) are NOT treated as section delimiters
-  // (#1041). The end-marker scan starts after the start-marker so it
-  // can never pick up an earlier end in the file.
+  // references (e.g. `` See the `<!-- gitnexus:start -->` block ``) are
+  // NOT treated as section delimiters (#1041). The end-marker scan starts
+  // after the start-marker so it can never pick up an earlier end.
   const startIdx = findSectionMarkerIndex(existingContent, GITNEXUS_START_MARKER);
   const endIdx = findSectionMarkerIndex(
     existingContent,
@@ -219,49 +272,19 @@ async function upsertGitNexusSection(
 }
 
 /**
- * Install GitNexus skills to .claude/skills/gitnexus/
- * Works natively with Claude Code, Cursor, and GitHub Copilot
+ * Install GitNexus skills as direct children of .agents/skills/ so Codex can
+ * discover each SKILL.md natively. Only GitNexus-owned directories are touched.
  */
-async function installSkills(repoPath: string): Promise<string[]> {
-  const skillsDir = path.join(repoPath, '.claude', 'skills', 'gitnexus');
+async function installSkills(repoPath: string, indexedCommit?: string): Promise<string[]> {
+  const skillsDir = path.join(repoPath, '.agents', 'skills');
   const installedSkills: string[] = [];
 
-  // Skill definitions bundled with the package
-  const skills = [
-    {
-      name: 'gitnexus-exploring',
-      description:
-        'Use when the user asks how code works, wants to understand architecture, trace execution flows, or explore unfamiliar parts of the codebase. Examples: "How does X work?", "What calls this function?", "Show me the auth flow"',
-    },
-    {
-      name: 'gitnexus-debugging',
-      description:
-        'Use when the user is debugging a bug, tracing an error, or asking why something fails. Examples: "Why is X failing?", "Where does this error come from?", "Trace this bug"',
-    },
-    {
-      name: 'gitnexus-impact-analysis',
-      description:
-        'Use when the user wants to know what will break if they change something, or needs safety analysis before editing code. Examples: "Is it safe to change X?", "What depends on this?", "What will break?"',
-    },
-    {
-      name: 'gitnexus-refactoring',
-      description:
-        'Use when the user wants to rename, extract, split, move, or restructure code safely. Examples: "Rename this function", "Extract this into a module", "Refactor this class", "Move this to a separate file"',
-    },
-    {
-      name: 'gitnexus-guide',
-      description:
-        'Use when the user asks about GitNexus itself — available tools, how to query the knowledge graph, MCP resources, graph schema, or workflow reference. Examples: "What GitNexus tools are available?", "How do I use GitNexus?"',
-    },
-    {
-      name: 'gitnexus-cli',
-      description:
-        'Use when the user needs to run GitNexus CLI commands like analyze/index a repo, check status, clean the index, generate a wiki, or list indexed repos. Examples: "Index this repo", "Reanalyze the codebase", "Generate a wiki"',
-    },
-  ];
+  await fs.mkdir(skillsDir, { recursive: true });
+  await fs.rm(path.join(skillsDir, MANAGED_SKILLS_COMMIT_FILE), { force: true });
 
-  for (const skill of skills) {
-    const skillDir = path.join(skillsDir, skill.name);
+  for (const skill of GITNEXUS_REPO_SKILLS) {
+    const skillName = skill.name;
+    const skillDir = path.join(skillsDir, skillName);
     const skillPath = path.join(skillDir, 'SKILL.md');
 
     try {
@@ -269,7 +292,7 @@ async function installSkills(repoPath: string): Promise<string[]> {
       await fs.mkdir(skillDir, { recursive: true });
 
       // Try to read from package skills directory
-      const packageSkillPath = path.join(__dirname, '..', '..', 'skills', `${skill.name}.md`);
+      const packageSkillPath = path.join(__dirname, '..', '..', 'skills', `${skillName}.md`);
       let skillContent: string;
 
       try {
@@ -277,11 +300,11 @@ async function installSkills(repoPath: string): Promise<string[]> {
       } catch {
         // Fallback: generate minimal skill content
         skillContent = `---
-name: ${skill.name}
+name: ${skillName}
 description: ${skill.description}
 ---
 
-# ${skill.name.charAt(0).toUpperCase() + skill.name.slice(1)}
+# ${skillName.charAt(0).toUpperCase() + skillName.slice(1)}
 
 ${skill.description}
 
@@ -290,11 +313,19 @@ Use GitNexus tools to accomplish this task.
       }
 
       await fs.writeFile(skillPath, skillContent, 'utf-8');
-      installedSkills.push(skill.name);
+      installedSkills.push(skillName);
     } catch (err) {
       // Skip on error, don't fail the whole process
-      console.warn(`Warning: Could not install skill ${skill.name}:`, err);
+      console.warn(`Warning: Could not install skill ${skillName}:`, err);
     }
+  }
+
+  if (installedSkills.length === GITNEXUS_REPO_SKILLS.length) {
+    await fs.writeFile(
+      path.join(skillsDir, MANAGED_SKILLS_COMMIT_FILE),
+      `${indexedCommit ?? 'unknown'}\n`,
+      'utf-8',
+    );
   }
 
   return installedSkills;
@@ -305,16 +336,18 @@ Use GitNexus tools to accomplish this task.
  */
 export async function generateAIContextFiles(
   repoPath: string,
-  _storagePath: string,
+  storagePath: string,
   projectName: string,
   stats: RepoStats,
   generatedSkills?: GeneratedSkillInfo[],
   options?: AIContextOptions,
 ): Promise<{ files: string[] }> {
+  const indexedCommit = await readIndexedCommit(storagePath);
   const groupNames = await findGroupsContainingRegistryName(projectName);
   const content = generateGitNexusContent(
     projectName,
     stats,
+    indexedCommit,
     generatedSkills,
     groupNames,
     options?.noStats,
@@ -322,24 +355,18 @@ export async function generateAIContextFiles(
   const createdFiles: string[] = [];
 
   if (!options?.skipAgentsMd) {
-    // Create AGENTS.md (standard for Cursor, Windsurf, OpenCode, Cline, etc.)
+    // Create AGENTS.md (Codex's repository instruction file).
     const agentsPath = path.join(repoPath, 'AGENTS.md');
     const agentsResult = await upsertGitNexusSection(agentsPath, content);
     createdFiles.push(`AGENTS.md (${agentsResult})`);
-
-    // Create CLAUDE.md (for Claude Code)
-    const claudePath = path.join(repoPath, 'CLAUDE.md');
-    const claudeResult = await upsertGitNexusSection(claudePath, content);
-    createdFiles.push(`CLAUDE.md (${claudeResult})`);
   } else {
     createdFiles.push('AGENTS.md (skipped via --skip-agents-md)');
-    createdFiles.push('CLAUDE.md (skipped via --skip-agents-md)');
   }
 
-  // Install skills to .claude/skills/gitnexus/
-  const installedSkills = await installSkills(repoPath);
+  // Install repo-scoped skills to .agents/skills/.
+  const installedSkills = await installSkills(repoPath, indexedCommit);
   if (installedSkills.length > 0) {
-    createdFiles.push(`.claude/skills/gitnexus/ (${installedSkills.length} skills)`);
+    createdFiles.push(`.agents/skills/ (${installedSkills.length} GitNexus skills)`);
   }
 
   return { files: createdFiles };

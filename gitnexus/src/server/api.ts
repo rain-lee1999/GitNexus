@@ -29,7 +29,7 @@ import { hybridSearch } from '../core/search/hybrid-search.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at server startup — crashes on unsupported Node ABI versions (#89)
 import { LocalBackend } from '../mcp/local/local-backend.js';
-import { mountMCPEndpoints } from './mcp-http.js';
+import { isLoopbackHost, mountMCPEndpoints, type MCPHTTPOptions } from './mcp-http.js';
 import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager } from './analyze-job.js';
@@ -523,7 +523,15 @@ const requestedRepo = (req: express.Request): string | undefined => {
   return undefined;
 };
 
-export const createServer = async (port: number, host: string = '127.0.0.1') => {
+export interface CreateHTTPServerOptions {
+  mcp?: MCPHTTPOptions;
+}
+
+export const createServer = async (
+  port: number,
+  host: string = '127.0.0.1',
+  options: CreateHTTPServerOptions = {},
+) => {
   const app = express();
   app.disable('x-powered-by');
 
@@ -560,7 +568,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Initialize MCP backend (multi-repo, shared across all MCP sessions)
   const backend = new LocalBackend();
   await backend.init();
-  const cleanupMcp = mountMCPEndpoints(app, backend);
+  const cleanupMcp = mountMCPEndpoints(app, backend, {
+    ...options.mcp,
+    remoteAccess: options.mcp?.remoteAccess ?? !isLoopbackHost(host),
+  });
   const jobManager = new JobManager();
 
   // Shared repo lock — prevents concurrent analyze + embed on the same repo path,

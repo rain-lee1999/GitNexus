@@ -32,6 +32,7 @@
   },
   "files": [
     "dist",
+    "codex-plugin",
     "hooks",
     "scripts",
     "skills",
@@ -47,9 +48,10 @@
     "test:integration": "vitest run test/integration",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "version": "node scripts/sync-codex-plugin-version.cjs --stage",
     "postinstall": "node scripts/build-tree-sitter-dart.cjs && node scripts/build-tree-sitter-proto.cjs",
     "prepare": "node scripts/build.js",
-    "prepack": "node scripts/build.js"
+    "prepack": "node scripts/sync-codex-plugin-version.cjs --check && node scripts/build.js"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.1.0",
