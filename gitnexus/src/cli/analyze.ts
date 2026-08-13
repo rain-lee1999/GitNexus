@@ -403,11 +403,11 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
       try {
         const { generateSkillFiles } = await import('./skill-gen.js');
         const { generateAIContextFiles } = await import('./ai-context.js');
-        const skillResult = await generateSkillFiles(
-          repoPath,
-          result.repoName,
-          result.pipelineResult,
-        );
+        // `repoName` is the registry identifier and can be a worktree-safe
+        // coordinator alias. Generated skills are user-visible tracked
+        // context, so use the display name carried by the orchestrator.
+        const contextName = result.contextName ?? result.repoName;
+        const skillResult = await generateSkillFiles(repoPath, contextName, result.pipelineResult);
         if (skillResult.skills.length > 0) {
           barLog(`  Generated ${skillResult.skills.length} skill files`);
           // Re-generate AI context files now that we have skill info
@@ -428,7 +428,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
           await generateAIContextFiles(
             repoPath,
             sp,
-            result.repoName,
+            contextName,
             {
               files: s.files ?? 0,
               nodes: s.nodes ?? 0,

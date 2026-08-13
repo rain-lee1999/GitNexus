@@ -105,7 +105,11 @@ describe('worktree refresh coordinator', () => {
 
     expect(runFullAnalysisMock).toHaveBeenCalledWith(
       root,
-      expect.objectContaining({ indexOnly: true, registryName: 'repo-worktree' }),
+      expect.objectContaining({
+        force: true,
+        indexOnly: true,
+        registryName: 'repo-worktree',
+      }),
       expect.any(Object),
     );
     expect((await getRefreshStatus(root)).staleMarkerCount).toBe(0);

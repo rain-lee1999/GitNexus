@@ -2,6 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const packageSpecifier = `gitnexus@${(require('../../package.json') as { version: string }).version}`;
 
 const execFileMock = vi.fn((...args: any[]) => {
   const callback = args.at(-1);
@@ -80,7 +84,7 @@ describe('setupClaudeCode', () => {
 
     expect(config.mcpServers.gitnexus).toEqual({
       command: 'cmd',
-      args: ['/c', 'npx', '-y', 'gitnexus@1.6.4', 'mcp'],
+      args: ['/c', 'npx', '-y', packageSpecifier, 'mcp'],
     });
   });
 
@@ -95,7 +99,7 @@ describe('setupClaudeCode', () => {
 
     expect(config.mcpServers.gitnexus).toEqual({
       command: 'npx',
-      args: ['-y', 'gitnexus@1.6.4', 'mcp'],
+      args: ['-y', packageSpecifier, 'mcp'],
     });
   });
 
@@ -187,7 +191,7 @@ describe('setupClaudeCode', () => {
 
     expect(config.mcpServers.gitnexus).toEqual({
       command: 'npx',
-      args: ['-y', 'gitnexus@1.6.4', 'mcp'],
+      args: ['-y', packageSpecifier, 'mcp'],
     });
   });
 });

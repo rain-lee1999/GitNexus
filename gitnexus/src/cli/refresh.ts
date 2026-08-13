@@ -709,7 +709,14 @@ const ensure = async (worktreePath: string, options: RefreshOptions): Promise<Re
   try {
     result = await runFullAnalysis(
       worktreePath,
-      { force: options.force, indexOnly: true, registryName: state.alias },
+      {
+        // A stale marker can represent uncommitted source edits, so HEAD-only
+        // freshness is insufficient here. Keep the refresh index-only, but
+        // force the pipeline whenever the coordinator observed a marker.
+        force: Boolean(options.force || markerSnapshot.length > 0),
+        indexOnly: true,
+        registryName: state.alias,
+      },
       { onProgress: () => {} },
     );
   } catch (error) {

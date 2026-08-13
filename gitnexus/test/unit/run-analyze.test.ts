@@ -3,7 +3,12 @@ import fs from 'fs/promises';
 import path from 'path';
 import { describe, it, expect } from 'vitest';
 import { deriveEmbeddingMode } from '../../src/core/embedding-mode.js';
-import { getStoragePaths, saveMeta, type RepoMeta } from '../../src/storage/repo-manager.js';
+import {
+  getStoragePaths,
+  registerRepo,
+  saveMeta,
+  type RepoMeta,
+} from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 describe('run-analyze module', () => {
@@ -55,6 +60,58 @@ describe('run-analyze module', () => {
       await expect(
         fs.readFile(path.join(tmpRepo.dbPath, '.gitnexus', '.gitignore'), 'utf-8'),
       ).resolves.toBe('*\n');
+    } finally {
+      if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = savedGitnexusHome;
+      await tmpRepo.cleanup();
+      await tmpHome.cleanup();
+    }
+  });
+
+  it('keeps a preserved coordinator registry alias out of generated AGENTS context', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-context-name-');
+    const tmpHome = await createTempDir('gitnexus-run-analyze-context-name-home-');
+    const savedGitnexusHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      await fs.writeFile(path.join(tmpRepo.dbPath, 'index.ts'), 'export const value = 1;\n');
+      execSync('git add index.ts', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=test -c user.email=test@test commit -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      const currentCommit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+      const coordinatorAlias = `${path.basename(tmpRepo.dbPath)}-coordinator-1234`;
+      await registerRepo(
+        tmpRepo.dbPath,
+        {
+          repoPath: tmpRepo.dbPath,
+          lastCommit: currentCommit,
+          indexedAt: new Date().toISOString(),
+        },
+        { name: coordinatorAlias },
+      );
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        {},
+        {
+          onProgress: () => {},
+        },
+      );
+
+      const contextName = path.basename(tmpRepo.dbPath);
+      expect(result.repoName).toBe(coordinatorAlias);
+      expect(result.contextName).toBe(contextName);
+      const agents = await fs.readFile(path.join(tmpRepo.dbPath, 'AGENTS.md'), 'utf-8');
+      expect(agents).toContain(`indexed by GitNexus as **${contextName}**`);
+      expect(agents).toContain(`gitnexus://repo/${contextName}/context`);
+      expect(agents).not.toContain(coordinatorAlias);
     } finally {
       if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
       else process.env.GITNEXUS_HOME = savedGitnexusHome;

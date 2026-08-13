@@ -99,7 +99,16 @@ export interface AnalyzeOptions {
 }
 
 export interface AnalyzeResult {
+  /**
+   * The registry-facing name returned by registerRepo(). This may be a
+   * coordinator alias and remains the name callers use for registry lookups.
+   */
   repoName: string;
+  /**
+   * The human-readable name written into generated AGENTS.md and skills.
+   * It intentionally stays independent from a preserved coordinator alias.
+   */
+  contextName: string;
   repoPath: string;
   stats: {
     files?: number;
@@ -139,6 +148,18 @@ export const PHASE_LABELS: Record<string, string> = {
   done: 'Done',
 };
 
+/**
+ * Choose the name shown in tracked, user-visible generated context.
+ *
+ * A refresh coordinator registers every worktree under a collision-resistant
+ * alias. That alias is an internal registry key, not a project display name:
+ * a later ordinary `gitnexus analyze` must not rewrite AGENTS.md or generated
+ * skills with it. An explicit `analyze --name` remains an intentional display
+ * override for backwards compatibility.
+ */
+export const getContextProjectName = (repoPath: string, explicitName?: string): string =>
+  explicitName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath);
+
 // ---------------------------------------------------------------------------
 // Main orchestrator
 // ---------------------------------------------------------------------------
@@ -176,6 +197,7 @@ async function runFullAnalysisUnlocked(
     callbacks.onProgress(phase, percent, message);
 
   const { storagePath, lbugPath } = getStoragePaths(repoPath);
+  const contextName = getContextProjectName(repoPath, options.registryName);
 
   // Clean up stale KuzuDB files from before the LadybugDB migration.
   const kuzuResult = await cleanupOldKuzuFiles(storagePath);
@@ -200,8 +222,8 @@ async function runFullAnalysisUnlocked(
       } else {
         await ensureGitNexusIgnored(repoPath);
         return {
-          repoName:
-            options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath),
+          repoName: options.registryName ?? contextName,
+          contextName,
           repoPath,
           stats: existingMeta.stats ?? {},
           alreadyUpToDate: true,
@@ -472,11 +494,10 @@ async function runFullAnalysisUnlocked(
     // pipeline `force` above. The CLI maps it from
     // `--allow-duplicate-name` only; `--force` and `--skills` both
     // trigger pipeline re-run but never bypass the registry guard.
-    // The returned name is the one actually written to the registry
-    // (after applying the precedence chain in registerRepo) — reuse it
-    // so AGENTS.md / skill files reference the same name MCP clients
-    // will look up (#979).
-    const projectName = await registerRepo(repoPath, meta, {
+    // Keep the registry-facing name separate from generated context. A
+    // coordinator alias is needed to distinguish worktrees, but it must not
+    // leak into tracked AGENTS.md or generated skills on a later full analyze.
+    const registryName = await registerRepo(repoPath, meta, {
       name: options.registryName,
       allowDuplicateName: options.allowDuplicateName,
     });
@@ -501,7 +522,7 @@ async function runFullAnalysisUnlocked(
         await generateAIContextFiles(
           repoPath,
           storagePath,
-          projectName,
+          contextName,
           {
             files: pipelineResult.totalFileCount,
             nodes: stats.nodes,
@@ -524,7 +545,8 @@ async function runFullAnalysisUnlocked(
     progress('done', 100, 'Done');
 
     return {
-      repoName: projectName,
+      repoName: registryName,
+      contextName,
       repoPath,
       stats: meta.stats,
       pipelineResult,

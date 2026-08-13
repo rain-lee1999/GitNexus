@@ -218,6 +218,12 @@ export class GitNexusLockTimeoutError extends Error {
 interface LockOwner {
   token: string;
   acquiredAt: string;
+  /**
+   * Advisory only: a same-host contender can reclaim a freshly orphaned lock
+   * when this PID is conclusively gone. Older lock files omit both fields.
+   */
+  pid?: number;
+  hostname?: string;
 }
 
 interface ResolvedLockOptions {
@@ -253,7 +259,16 @@ const readLockOwner = async (lockPath: string): Promise<LockOwner | undefined> =
     const raw = await fs.readFile(getLockOwnerPath(lockPath), 'utf-8');
     const parsed = JSON.parse(raw) as Partial<LockOwner>;
     if (typeof parsed.token !== 'string' || typeof parsed.acquiredAt !== 'string') return undefined;
-    return { token: parsed.token, acquiredAt: parsed.acquiredAt };
+    return {
+      token: parsed.token,
+      acquiredAt: parsed.acquiredAt,
+      ...(typeof parsed.pid === 'number' && Number.isInteger(parsed.pid) && parsed.pid > 0
+        ? { pid: parsed.pid }
+        : {}),
+      ...(typeof parsed.hostname === 'string' && parsed.hostname.length > 0
+        ? { hostname: parsed.hostname }
+        : {}),
+    };
   } catch {
     return undefined;
   }
@@ -270,18 +285,43 @@ const isStaleLock = async (lockPath: string, staleAfterMs: number): Promise<bool
 };
 
 /**
- * Move an expired lock out of the acquisition path before removing it. This
- * is safer than blindly `rm`-ing a lock path: a concurrent releaser can only
- * make the rename fail/retry, never cause us to delete a newly-created lock.
+ * PIDs are only trustworthy as a fast-path when the lock was written by this
+ * hostname. `ESRCH` is the one conclusive dead-owner signal; permission and
+ * platform errors deliberately retain the normal heartbeat lease behaviour.
+ */
+const hasConfirmedDeadLocalOwner = (owner: LockOwner | undefined): boolean => {
+  if (
+    owner?.hostname !== os.hostname() ||
+    owner.pid === undefined ||
+    !Number.isInteger(owner.pid) ||
+    owner.pid <= 0
+  ) {
+    return false;
+  }
+
+  try {
+    process.kill(owner.pid, 0);
+    return false;
+  } catch (err: any) {
+    return err?.code === 'ESRCH';
+  }
+};
+
+/**
+ * Move an expired or conclusively orphaned local lock out of the acquisition
+ * path before removing it. This is safer than blindly `rm`-ing a lock path:
+ * a concurrent releaser can only make the rename fail/retry, never cause us
+ * to delete a newly-created lock.
  *
- * Lock ownership intentionally uses an opaque token plus a heartbeat, rather
- * than a PID file. PIDs are not reliable across containers, restarts, or
- * reused process namespaces.
+ * Lock ownership uses an opaque token plus a heartbeat. PID metadata is an
+ * optional same-host crash-recovery optimization, not the primary lease.
  */
 const recoverStaleLock = async (lockPath: string, staleAfterMs: number): Promise<boolean> => {
-  if (!(await isStaleLock(lockPath, staleAfterMs))) return false;
-
   const observedOwner = await readLockOwner(lockPath);
+  if (!hasConfirmedDeadLocalOwner(observedOwner) && !(await isStaleLock(lockPath, staleAfterMs))) {
+    return false;
+  }
+
   const quarantinePath = `${lockPath}.stale-${randomUUID()}`;
 
   try {
@@ -336,7 +376,12 @@ export const acquireFileLock = async (
       try {
         await fs.writeFile(
           getLockOwnerPath(lockPath),
-          JSON.stringify({ token, acquiredAt: new Date().toISOString() } satisfies LockOwner),
+          JSON.stringify({
+            token,
+            acquiredAt: new Date().toISOString(),
+            pid: process.pid,
+            hostname: os.hostname(),
+          } satisfies LockOwner),
           'utf-8',
         );
       } catch (err) {

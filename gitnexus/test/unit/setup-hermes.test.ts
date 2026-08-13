@@ -3,6 +3,10 @@ import { EventEmitter } from 'events';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const packageSpecifier = `gitnexus@${(require('../../package.json') as { version: string }).version}`;
 
 const execFileMock = vi.fn((...args: any[]) => {
   const callback = args.at(-1);
@@ -106,7 +110,7 @@ describe('setupCommand Hermes support', () => {
 
     expect(spawnMock).toHaveBeenCalledWith(
       '/usr/local/bin/hermes',
-      ['mcp', 'add', 'gitnexus', '--command', 'npx', '--args', '-y', 'gitnexus@1.6.4', 'mcp'],
+      ['mcp', 'add', 'gitnexus', '--command', 'npx', '--args', '-y', packageSpecifier, 'mcp'],
       { shell: false, stdio: ['pipe', 'pipe', 'pipe'] },
     );
     expect(spawnMock.mock.results[0].value.stdin.end).toHaveBeenCalledWith('Y\n');

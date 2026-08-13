@@ -54,6 +54,17 @@ describe('generateAIContextFiles', () => {
     await expect(fs.access(path.join(tmpDir, 'CLAUDE.md'))).rejects.toThrow();
   });
 
+  it('uses the supplied display name rather than an internal registry alias in generated context', async () => {
+    const displayName = 'visible-project';
+    const coordinatorAlias = 'visible-project-a1b2c3d4e5f6';
+    await generateAIContextFiles(tmpDir, storagePath, displayName, { nodes: 10, edges: 20 });
+
+    const content = await fs.readFile(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
+    expect(content).toContain(`indexed by GitNexus as **${displayName}**`);
+    expect(content).toContain(`gitnexus://repo/${displayName}/context`);
+    expect(content).not.toContain(coordinatorAlias);
+  });
+
   it('keeps tracked AGENTS.md stable after committing it and refreshing the index', async () => {
     const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ai-ctx-git-test-'));
     const repoStoragePath = path.join(repoPath, '.gitnexus');

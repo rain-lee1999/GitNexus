@@ -4,7 +4,7 @@
  * Tests: getStoragePath, getStoragePaths, readRegistry, registerRepo, unregisterRepo
  * Covers hardening fixes #29 (API key file permissions) and #30 (case-insensitive paths on Windows)
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'path';
 import os from 'os';
 import fs from 'fs/promises';
@@ -260,6 +260,114 @@ describe('GitNexus writer locks', () => {
     };
     expect(owner.token).not.toBe('crashed-owner');
     await recovered.release();
+  });
+
+  it('immediately recovers a fresh same-host lock whose owner PID is confirmed dead', async () => {
+    const lockPath = getAnalysisLockPath(tmpRepo.dbPath);
+    await fs.mkdir(lockPath, { recursive: true });
+    await fs.writeFile(
+      path.join(lockPath, 'owner.json'),
+      JSON.stringify({
+        token: 'crashed-local-owner',
+        acquiredAt: new Date().toISOString(),
+        pid: 2_147_483_647,
+        hostname: os.hostname(),
+      }),
+      'utf-8',
+    );
+
+    const recovered = await acquireFileLock(lockPath, {
+      waitTimeoutMs: 100,
+      staleAfterMs: 60_000,
+      retryDelayMs: 5,
+    });
+
+    const owner = JSON.parse(await fs.readFile(path.join(lockPath, 'owner.json'), 'utf-8')) as {
+      token: string;
+      pid?: number;
+      hostname?: string;
+    };
+    expect(owner.token).not.toBe('crashed-local-owner');
+    expect(owner.pid).toBe(process.pid);
+    expect(owner.hostname).toBe(os.hostname());
+    await recovered.release();
+  });
+
+  it('does not reclaim a fresh same-host lock held by a live PID', async () => {
+    const lockPath = getAnalysisLockPath(tmpRepo.dbPath);
+    await fs.mkdir(lockPath, { recursive: true });
+    await fs.writeFile(
+      path.join(lockPath, 'owner.json'),
+      JSON.stringify({
+        token: 'live-local-owner',
+        acquiredAt: new Date().toISOString(),
+        pid: process.pid,
+        hostname: os.hostname(),
+      }),
+      'utf-8',
+    );
+
+    await expect(
+      acquireFileLock(lockPath, {
+        waitTimeoutMs: 25,
+        staleAfterMs: 60_000,
+        retryDelayMs: 5,
+      }),
+    ).rejects.toBeInstanceOf(GitNexusLockTimeoutError);
+  });
+
+  it('keeps a fresh foreign-host lock on its heartbeat lease even when its PID is absent locally', async () => {
+    const lockPath = getAnalysisLockPath(tmpRepo.dbPath);
+    await fs.mkdir(lockPath, { recursive: true });
+    await fs.writeFile(
+      path.join(lockPath, 'owner.json'),
+      JSON.stringify({
+        token: 'foreign-host-owner',
+        acquiredAt: new Date().toISOString(),
+        pid: 2_147_483_647,
+        hostname: `${os.hostname()}-other-host`,
+      }),
+      'utf-8',
+    );
+
+    await expect(
+      acquireFileLock(lockPath, {
+        waitTimeoutMs: 25,
+        staleAfterMs: 60_000,
+        retryDelayMs: 5,
+      }),
+    ).rejects.toBeInstanceOf(GitNexusLockTimeoutError);
+  });
+
+  it('does not treat EPERM as evidence that a fresh same-host owner is dead', async () => {
+    const lockPath = getAnalysisLockPath(tmpRepo.dbPath);
+    await fs.mkdir(lockPath, { recursive: true });
+    await fs.writeFile(
+      path.join(lockPath, 'owner.json'),
+      JSON.stringify({
+        token: 'permission-denied-owner',
+        acquiredAt: new Date().toISOString(),
+        pid: 2_147_483_647,
+        hostname: os.hostname(),
+      }),
+      'utf-8',
+    );
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+      const error = Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+      throw error;
+    });
+
+    try {
+      await expect(
+        acquireFileLock(lockPath, {
+          waitTimeoutMs: 25,
+          staleAfterMs: 60_000,
+          retryDelayMs: 5,
+        }),
+      ).rejects.toBeInstanceOf(GitNexusLockTimeoutError);
+    } finally {
+      killSpy.mockRestore();
+    }
   });
 
   it('uses a GITNEXUS_HOME-scoped global registry lock and permits nested registry work', async () => {
