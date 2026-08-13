@@ -237,7 +237,7 @@ describe('setupOpenCode — JSONC preservation', () => {
 
     expect(config.mcp.gitnexus).toEqual({
       type: 'local',
-      command: ['npx', '-y', 'gitnexus@1.6.3', 'mcp'],
+      command: ['npx', '-y', 'gitnexus@1.6.4', 'mcp'],
     });
   });
 

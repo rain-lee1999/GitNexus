@@ -31,7 +31,9 @@ export function checkStaleness(repoPath: string, lastCommit: string): StalenessI
       return {
         isStale: true,
         commitsBehind,
-        hint: `⚠️ Index is ${commitsBehind} commit${commitsBehind > 1 ? 's' : ''} behind HEAD. Run analyze tool to update.`,
+        hint:
+          `⚠️ Index is ${commitsBehind} commit${commitsBehind > 1 ? 's' : ''} behind HEAD. ` +
+          `Run \`gitnexus refresh ensure --path ${JSON.stringify(path.resolve(repoPath))}\` to update it safely.`,
       };
     }
 
@@ -131,13 +133,14 @@ export async function checkCwdMatch(cwd: string): Promise<CwdMatch> {
     hint =
       `⚠️ Index for "${sibling.name}" was built at ${sibling.path}; ` +
       `your cwd (${cwdGitRoot}) is a sibling clone that is ${drift} commit${drift > 1 ? 's' : ''} ` +
-      `ahead of the indexed commit. Results may be stale or incorrect — re-run \`gitnexus analyze\` ` +
-      `to refresh the index.`;
+      `ahead of the indexed commit. Results may be stale or incorrect — run ` +
+      `\`gitnexus refresh ensure --path ${JSON.stringify(cwdGitRoot)}\` to refresh this worktree index.`;
   } else {
     hint =
       `⚠️ Index for "${sibling.name}" was built at ${sibling.path}; ` +
       `your cwd (${cwdGitRoot}) is a sibling clone whose HEAD differs from the indexed commit. ` +
-      `Results may be stale or incorrect — re-run \`gitnexus analyze\` to refresh the index.`;
+      `Results may be stale or incorrect — run \`gitnexus refresh ensure --path ${JSON.stringify(cwdGitRoot)}\` ` +
+      `to refresh this worktree index.`;
   }
 
   return {

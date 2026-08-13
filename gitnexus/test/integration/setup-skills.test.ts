@@ -101,7 +101,7 @@ describe('setupCommand skills integration', () => {
 
     const codexConfig = await fs.readFile(path.join(tempHome, '.codex', 'config.toml'), 'utf-8');
     expect(codexConfig).toContain('[mcp_servers.gitnexus]');
-    expect(codexConfig).toContain('gitnexus@1.6.3');
+    expect(codexConfig).toContain('gitnexus@1.6.4');
 
     const codexSkill = await fs.readFile(
       path.join(tempHome, '.agents', 'skills', 'gitnexus-cli', 'SKILL.md'),

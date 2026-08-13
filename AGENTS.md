@@ -7,12 +7,12 @@ Last reviewed: 2026-08-13
 
 ## Scope
 
-| Boundary | Rule |
-|----------|------|
-| **Reads** | `gitnexus/`, `gitnexus-web/`, `eval/`, plugin packages, `.github/`, `.gitnexus/`, docs. |
-| **Writes** | Only paths required for the change; keep diffs minimal. Update lockfiles when deps change. |
-| **Executes** | `npm`, `npx`, `node` under `gitnexus/` and `gitnexus-web/`; `uv run` for Python under `eval/`; documented CI/dev workflows. |
-| **Off-limits** | Real `.env` / secrets, production credentials, unrelated repos, destructive git ops without confirmation. |
+| Boundary       | Rule                                                                                                                        |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| **Reads**      | `gitnexus/`, `gitnexus-web/`, `eval/`, plugin packages, `.github/`, `.gitnexus/`, docs.                                     |
+| **Writes**     | Only paths required for the change; keep diffs minimal. Update lockfiles when deps change.                                  |
+| **Executes**   | `npm`, `npx`, `node` under `gitnexus/` and `gitnexus-web/`; `uv run` for Python under `eval/`; documented CI/dev workflows. |
+| **Off-limits** | Real `.env` / secrets, production credentials, unrelated repos, destructive git ops without confirmation.                   |
 
 ## Model Configuration
 
@@ -22,15 +22,16 @@ Last reviewed: 2026-08-13
 ## Execution Sequence (complex tasks)
 
 For multi-step work, state up front:
+
 1. Which rules in this file and **[GUARDRAILS.md](GUARDRAILS.md)** apply (and any relevant Signs).
 2. Current **Scope** boundaries.
 3. Which **validation commands** you will run (`cd gitnexus && npm test`, `npx tsc --noEmit`).
 
-On long threads, *"Remember: apply all AGENTS.md rules"* re-weights these instructions against context dilution.
+On long threads, _"Remember: apply all AGENTS.md rules"_ re-weights these instructions against context dilution.
 
 ## Codex hooks
 
-The bundled GitNexus Codex plugin provides advisory **PreToolUse** search enrichment and **PostToolUse** index-freshness checks. Review and trust them through `/hooks`; they never edit files or run `analyze` automatically.
+The bundled GitNexus Codex plugin provides **PreToolUse** search enrichment plus a graph-query freshness gate, and **PostToolUse** Git-history stale markers. Review and trust them through `/hooks`; they never run `analyze` directly.
 
 ## Context budget
 
@@ -46,35 +47,36 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 
 ## Changelog
 
-| Date | Version | Change |
-|------|---------|--------|
-| 2026-08-13 | 1.8.0 | Migrated GitNexus assets and hooks to the Codex-native plugin, `AGENTS.md`, and `.agents/skills/` layout. |
-| 2026-04-23 | 1.7.0 | TypeScript added to `MIGRATED_LANGUAGES` (registry-primary call resolution by default). |
-| 2026-04-20 | 1.6.0 | Added scope-resolution pipeline pointer (RFC #909 Ring 3); Python migrated to registry-primary. |
-| 2026-04-19 | 1.5.0 | Cross-repo impact (#794): `impact`/`query`/`context` accept `repo: "@<group>"` + `service`. Removed `group_query`/`group_contracts`/`group_status` MCP tools; added `gitnexus://group/{name}/contracts` and `gitnexus://group/{name}/status` resources. |
-| 2026-04-16 | 1.4.0 | Fixed: web UI description, pre-commit behavior, MCP tools (7->16), added gitnexus-shared, removed stale vite-plugin-wasm gotcha. |
-| 2026-04-13 | 1.3.0 | Updated GitNexus index stats after DAG refactor. |
-| 2026-03-24 | 1.2.0 | Fixed gitnexus:start block duplication. |
-| 2026-03-23 | 1.1.0 | Updated agent instructions, references, Cursor layout. |
-| 2026-03-22 | 1.0.0 | Initial structured header and changelog. |
+| Date       | Version | Change                                                                                                                                                                                                                                                  |
+| ---------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-08-13 | 1.8.0   | Migrated GitNexus assets and hooks to the Codex-native plugin, `AGENTS.md`, and `.agents/skills/` layout.                                                                                                                                               |
+| 2026-04-23 | 1.7.0   | TypeScript added to `MIGRATED_LANGUAGES` (registry-primary call resolution by default).                                                                                                                                                                 |
+| 2026-04-20 | 1.6.0   | Added scope-resolution pipeline pointer (RFC #909 Ring 3); Python migrated to registry-primary.                                                                                                                                                         |
+| 2026-04-19 | 1.5.0   | Cross-repo impact (#794): `impact`/`query`/`context` accept `repo: "@<group>"` + `service`. Removed `group_query`/`group_contracts`/`group_status` MCP tools; added `gitnexus://group/{name}/contracts` and `gitnexus://group/{name}/status` resources. |
+| 2026-04-16 | 1.4.0   | Fixed: web UI description, pre-commit behavior, MCP tools (7->16), added gitnexus-shared, removed stale vite-plugin-wasm gotcha.                                                                                                                        |
+| 2026-04-13 | 1.3.0   | Updated GitNexus index stats after DAG refactor.                                                                                                                                                                                                        |
+| 2026-03-24 | 1.2.0   | Fixed gitnexus:start block duplication.                                                                                                                                                                                                                 |
+| 2026-03-23 | 1.1.0   | Updated agent instructions, references, Cursor layout.                                                                                                                                                                                                  |
+| 2026-03-22 | 1.0.0   | Initial structured header and changelog.                                                                                                                                                                                                                |
 
 ---
 
 <!-- gitnexus:start -->
 <!-- gitnexus:context-version:1 -->
+
 # GitNexus — Code Intelligence
 
 This project is indexed by GitNexus as **GitNexus** (23081 symbols, 30497 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
+> Graph stale/missing: the Codex gate queues an index-only refresh and denies the current call; retry when ready, or run `gitnexus refresh ensure --path <absolute-worktree>` to wait synchronously. Freshness-gated graph tools require that absolute worktree path in `repo`; aliases are not accepted by the gate. `detect_changes` is not freshness-gated.
 
 ## Always Do
 
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run impact analysis before editing any symbol.** Run `gitnexus_impact({target: "symbolName", direction: "upstream", repo: "<absolute-worktree>"})`, then report its blast radius.
 - **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
+- For unfamiliar code, use `gitnexus_query({query: "concept", repo: "<absolute-worktree>"})` to find execution flows.
+- For a symbol's callers, callees, and flows, use `gitnexus_context({name: "symbolName", repo: "<absolute-worktree>"})`.
 
 ## Never Do
 
@@ -85,44 +87,44 @@ This project is indexed by GitNexus as **GitNexus** (23081 symbols, 30497 relati
 
 ## Resources
 
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/GitNexus/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/GitNexus/clusters` | All functional areas |
-| `gitnexus://repo/GitNexus/processes` | All execution flows |
-| `gitnexus://repo/GitNexus/process/{name}` | Step-by-step execution trace |
+| Resource                                  | Use for                                  |
+| ----------------------------------------- | ---------------------------------------- |
+| `gitnexus://repo/GitNexus/context`        | Codebase overview, check index freshness |
+| `gitnexus://repo/GitNexus/clusters`       | All functional areas                     |
+| `gitnexus://repo/GitNexus/processes`      | All execution flows                      |
+| `gitnexus://repo/GitNexus/process/{name}` | Step-by-step execution trace             |
 
 ## CLI
 
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.agents/skills/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.agents/skills/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.agents/skills/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.agents/skills/gitnexus-refactoring/SKILL.md` |
-| Review a pull request or code changes | `.agents/skills/gitnexus-pr-review/SKILL.md` |
-| Tools, resources, schema reference | `.agents/skills/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.agents/skills/gitnexus-cli/SKILL.md` |
-| Work in the Ingestion area (221 symbols) | `.agents/skills/gitnexus-generated-ingestion/SKILL.md` |
-| Work in the Cli area (146 symbols) | `.agents/skills/gitnexus-generated-cli/SKILL.md` |
-| Work in the Components area (108 symbols) | `.agents/skills/gitnexus-generated-components/SKILL.md` |
-| Work in the Group area (96 symbols) | `.agents/skills/gitnexus-generated-group/SKILL.md` |
-| Work in the Hooks area (91 symbols) | `.agents/skills/gitnexus-generated-hooks/SKILL.md` |
-| Work in the Type-extractors area (90 symbols) | `.agents/skills/gitnexus-generated-type-extractors/SKILL.md` |
-| Work in the Configs area (85 symbols) | `.agents/skills/gitnexus-generated-configs/SKILL.md` |
-| Work in the Unit area (76 symbols) | `.agents/skills/gitnexus-generated-unit/SKILL.md` |
-| Work in the Lbug area (74 symbols) | `.agents/skills/gitnexus-generated-lbug/SKILL.md` |
+| Task                                           | Read this skill file                                          |
+| ---------------------------------------------- | ------------------------------------------------------------- |
+| Understand architecture / "How does X work?"   | `.agents/skills/gitnexus-exploring/SKILL.md`                  |
+| Blast radius / "What breaks if I change X?"    | `.agents/skills/gitnexus-impact-analysis/SKILL.md`            |
+| Trace bugs / "Why is X failing?"               | `.agents/skills/gitnexus-debugging/SKILL.md`                  |
+| Rename / extract / split / refactor            | `.agents/skills/gitnexus-refactoring/SKILL.md`                |
+| Review a pull request or code changes          | `.agents/skills/gitnexus-pr-review/SKILL.md`                  |
+| Tools, resources, schema reference             | `.agents/skills/gitnexus-guide/SKILL.md`                      |
+| Index, status, clean, wiki CLI commands        | `.agents/skills/gitnexus-cli/SKILL.md`                        |
+| Work in the Ingestion area (221 symbols)       | `.agents/skills/gitnexus-generated-ingestion/SKILL.md`        |
+| Work in the Cli area (146 symbols)             | `.agents/skills/gitnexus-generated-cli/SKILL.md`              |
+| Work in the Components area (108 symbols)      | `.agents/skills/gitnexus-generated-components/SKILL.md`       |
+| Work in the Group area (96 symbols)            | `.agents/skills/gitnexus-generated-group/SKILL.md`            |
+| Work in the Hooks area (91 symbols)            | `.agents/skills/gitnexus-generated-hooks/SKILL.md`            |
+| Work in the Type-extractors area (90 symbols)  | `.agents/skills/gitnexus-generated-type-extractors/SKILL.md`  |
+| Work in the Configs area (85 symbols)          | `.agents/skills/gitnexus-generated-configs/SKILL.md`          |
+| Work in the Unit area (76 symbols)             | `.agents/skills/gitnexus-generated-unit/SKILL.md`             |
+| Work in the Lbug area (74 symbols)             | `.agents/skills/gitnexus-generated-lbug/SKILL.md`             |
 | Work in the Scope-resolution area (72 symbols) | `.agents/skills/gitnexus-generated-scope-resolution/SKILL.md` |
-| Work in the Server area (65 symbols) | `.agents/skills/gitnexus-generated-server/SKILL.md` |
-| Work in the Local area (61 symbols) | `.agents/skills/gitnexus-generated-local/SKILL.md` |
-| Work in the Extractors area (55 symbols) | `.agents/skills/gitnexus-generated-extractors/SKILL.md` |
-| Work in the Workers area (53 symbols) | `.agents/skills/gitnexus-generated-workers/SKILL.md` |
-| Work in the Wiki area (51 symbols) | `.agents/skills/gitnexus-generated-wiki/SKILL.md` |
-| Work in the Typescript area (50 symbols) | `.agents/skills/gitnexus-generated-typescript/SKILL.md` |
-| Work in the Embeddings area (50 symbols) | `.agents/skills/gitnexus-generated-embeddings/SKILL.md` |
-| Work in the Storage area (48 symbols) | `.agents/skills/gitnexus-generated-storage/SKILL.md` |
-| Work in the Llm area (44 symbols) | `.agents/skills/gitnexus-generated-llm/SKILL.md` |
-| Work in the Services area (43 symbols) | `.agents/skills/gitnexus-generated-services/SKILL.md` |
+| Work in the Server area (65 symbols)           | `.agents/skills/gitnexus-generated-server/SKILL.md`           |
+| Work in the Local area (61 symbols)            | `.agents/skills/gitnexus-generated-local/SKILL.md`            |
+| Work in the Extractors area (55 symbols)       | `.agents/skills/gitnexus-generated-extractors/SKILL.md`       |
+| Work in the Workers area (53 symbols)          | `.agents/skills/gitnexus-generated-workers/SKILL.md`          |
+| Work in the Wiki area (51 symbols)             | `.agents/skills/gitnexus-generated-wiki/SKILL.md`             |
+| Work in the Typescript area (50 symbols)       | `.agents/skills/gitnexus-generated-typescript/SKILL.md`       |
+| Work in the Embeddings area (50 symbols)       | `.agents/skills/gitnexus-generated-embeddings/SKILL.md`       |
+| Work in the Storage area (48 symbols)          | `.agents/skills/gitnexus-generated-storage/SKILL.md`          |
+| Work in the Llm area (44 symbols)              | `.agents/skills/gitnexus-generated-llm/SKILL.md`              |
+| Work in the Services area (43 symbols)         | `.agents/skills/gitnexus-generated-services/SKILL.md`         |
 
 <!-- gitnexus:end -->
 
@@ -130,14 +132,14 @@ This project is indexed by GitNexus as **GitNexus** (23081 symbols, 30497 relati
 
 ### Packages
 
-| Package | Path | Purpose |
-|---------|------|---------|
-| **CLI/Core** | `gitnexus/` | TypeScript CLI, indexing pipeline, MCP server. Published to npm. |
-| **Web UI** | `gitnexus-web/` | React/Vite thin client. All queries via `gitnexus serve` HTTP API. |
-| **Shared** | `gitnexus-shared/` | Shared TypeScript types and constants. |
-| Claude Plugin | `gitnexus-claude-plugin/` | Static config for Claude marketplace. |
-| Cursor Integration | `gitnexus-cursor-integration/` | Static config for Cursor editor. |
-| Eval | `eval/` | Python evaluation harness (Docker + LLM API keys). |
+| Package            | Path                           | Purpose                                                            |
+| ------------------ | ------------------------------ | ------------------------------------------------------------------ |
+| **CLI/Core**       | `gitnexus/`                    | TypeScript CLI, indexing pipeline, MCP server. Published to npm.   |
+| **Web UI**         | `gitnexus-web/`                | React/Vite thin client. All queries via `gitnexus serve` HTTP API. |
+| **Shared**         | `gitnexus-shared/`             | Shared TypeScript types and constants.                             |
+| Claude Plugin      | `gitnexus-claude-plugin/`      | Static config for Claude marketplace.                              |
+| Cursor Integration | `gitnexus-cursor-integration/` | Static config for Cursor editor.                                   |
+| Eval               | `eval/`                        | Python evaluation harness (Docker + LLM API keys).                 |
 
 ### Running services
 
@@ -150,12 +152,14 @@ npx gitnexus serve                         # HTTP API on port 4747 (from any ind
 ### Testing
 
 **CLI / Core (`gitnexus/`)**
+
 - `npm test` — full vitest suite (~2000 tests)
 - `npm run test:unit` — unit tests only
 - `npm run test:integration` — integration (~1850 tests). LadybugDB file-locking tests may fail in containers (known env issue).
 - `npx tsc --noEmit` — typecheck
 
 **Web UI (`gitnexus-web/`)**
+
 - `npm test` — vitest (~200 tests)
 - `npm run test:e2e` — Playwright (7 spec files; requires `gitnexus serve` + `npm run dev`)
 - `npx tsc -b --noEmit` — typecheck

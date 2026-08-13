@@ -127,7 +127,9 @@ describe('generateAIContextFiles', () => {
 
     const content = await fs.readFile(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
 
-    expect(content).toContain('If any GitNexus tool warns the index is stale');
+    expect(content).toContain('Graph stale/missing');
+    expect(content).toContain('gitnexus refresh ensure --path <absolute-worktree>');
+    expect(content).toContain('detect_changes` is not freshness-gated');
     expect(content).toContain('## Always Do');
     expect(content).toContain('## Never Do');
     expect(content).toContain('## Resources');

@@ -36,7 +36,7 @@ const pluginRegistration = {
   transport: {
     type: 'stdio',
     command: 'npx',
-    args: ['-y', 'gitnexus@1.6.3', 'mcp'],
+    args: ['-y', 'gitnexus@1.6.4', 'mcp'],
   },
 };
 

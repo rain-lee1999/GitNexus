@@ -32,6 +32,7 @@ import {
   resolveRegistryEntry,
   assertSafeStoragePath,
   unregisterRepo,
+  withAnalysisLock,
   RegistryNotFoundError,
   RegistryAmbiguousTargetError,
   UnsafeStoragePathError,
@@ -98,8 +99,13 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
   // orphaned — `listRegisteredRepos({ validate: true })` prunes those on
   // next read, so the failure is self-healing.
   try {
-    await fs.rm(entry.storagePath, { recursive: true, force: true });
-    await unregisterRepo(entry.path);
+    // Destructive removal uses the same per-worktree writer lock as
+    // `analyze` and `refresh ensure`, so a concurrent index rebuild cannot
+    // write into the storage directory while it is being removed.
+    await withAnalysisLock(entry.path, async () => {
+      await fs.rm(entry.storagePath, { recursive: true, force: true });
+      await unregisterRepo(entry.path);
+    });
     console.log(`Removed: ${entry.name}`);
     console.log(`   Path:    ${entry.path}`);
     console.log(`   Storage: ${entry.storagePath}`);

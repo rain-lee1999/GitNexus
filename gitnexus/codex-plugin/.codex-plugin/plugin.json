@@ -1,7 +1,7 @@
 {
   "name": "gitnexus",
-  "version": "1.6.3",
-  "description": "Codex-native code intelligence with execution-flow search, symbol context, blast-radius analysis, and change detection.",
+  "version": "1.6.4",
+  "description": "Codex-native code intelligence with freshness-gated graph queries, execution-flow search, symbol context, blast-radius analysis, and change detection.",
   "author": {
     "name": "GitNexus"
   },
@@ -15,7 +15,7 @@
   "interface": {
     "displayName": "GitNexus",
     "shortDescription": "Graph-powered code intelligence for Codex.",
-    "longDescription": "Explore execution flows, inspect symbol relationships, measure blast radius before edits, and map changes back to affected processes.",
+    "longDescription": "Explore execution flows, inspect symbol relationships, measure blast radius before edits, and map changes back to affected processes with per-worktree freshness coordination.",
     "developerName": "GitNexus",
     "category": "Coding",
     "capabilities": ["Read", "Write"],

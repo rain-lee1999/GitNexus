@@ -49,26 +49,26 @@ GITNEXUS_COBOL_DIRS=s,c,wfproc GITNEXUS_VERBOSE=1 node --max-old-space-size=8192
 
 ### CardDemo (AWS)
 
-| Metric | Value |
-| ------ | ----- |
+| Metric      | Value  |
+| ----------- | ------ |
 | Graph nodes | 12,323 |
-| Graph edges | 8,893 |
-| Total time | 7.4s |
+| Graph edges | 8,893  |
+| Total time  | 7.4s   |
 
 ### ACAS
 
-| Metric | Value |
-| ------ | ----- |
+| Metric      | Value  |
+| ----------- | ------ |
 | Graph nodes | 14,016 |
 | Graph edges | 15,452 |
-| Total time | 9.3s |
+| Total time  | 9.3s   |
 
 ### Micro-Benchmark (Single-File Extraction)
 
-| Metric | Value |
-| ------ | ----- |
-| Per-iteration | 0.65ms |
-| Throughput | ~382K lines/sec |
+| Metric        | Value           |
+| ------------- | --------------- |
+| Per-iteration | 0.65ms          |
+| Throughput    | ~382K lines/sec |
 
 ## Worker Pool Tuning
 
@@ -221,9 +221,15 @@ node --max-old-space-size=16384 /path/to/gitnexus/dist/cli/index.js analyze
 
 For very large repos (>500MB source), consider `--max-old-space-size=32768`.
 
-### Concurrent analyze corruption
+### Concurrent refreshes
 
-**Rule:** Only ONE `gitnexus analyze` process should run at a time per repository. Concurrent writes to KuzuDB corrupt the database.
+Use the coordinator for routine freshness. It serializes one writer per worktree and avoids rewriting agent assets:
+
+```bash
+gitnexus refresh ensure --path /absolute/path/to/worktree
+```
+
+Do not build external automation that starts multiple direct `analyze` processes for the same worktree. The analysis lock protects GitNexus writers, but a non-GitNexus process can still hold the database.
 
 If corruption occurs:
 

@@ -80,7 +80,7 @@ describe('setupClaudeCode', () => {
 
     expect(config.mcpServers.gitnexus).toEqual({
       command: 'cmd',
-      args: ['/c', 'npx', '-y', 'gitnexus@1.6.3', 'mcp'],
+      args: ['/c', 'npx', '-y', 'gitnexus@1.6.4', 'mcp'],
     });
   });
 
@@ -95,7 +95,7 @@ describe('setupClaudeCode', () => {
 
     expect(config.mcpServers.gitnexus).toEqual({
       command: 'npx',
-      args: ['-y', 'gitnexus@1.6.3', 'mcp'],
+      args: ['-y', 'gitnexus@1.6.4', 'mcp'],
     });
   });
 
@@ -187,7 +187,7 @@ describe('setupClaudeCode', () => {
 
     expect(config.mcpServers.gitnexus).toEqual({
       command: 'npx',
-      args: ['-y', 'gitnexus@1.6.3', 'mcp'],
+      args: ['-y', 'gitnexus@1.6.4', 'mcp'],
     });
   });
 });

@@ -17,6 +17,6 @@ Use the GitNexus knowledge graph before broad text search when the task depends 
 
 ## Repository selection and freshness
 
-Call `list_repos` when the target is ambiguous and pass `repo` on later calls. Treat an index-staleness warning as authoritative: run `npx gitnexus analyze` in that repository and retry. A normal analyze preserves existing embeddings.
+Call `list_repos` when the target is ambiguous and pass an absolute worktree path as `repo` on every graph query. The Codex freshness gate rejects an omitted `repo`, because the MCP server cannot safely infer the client worktree. Treat a freshness-gate warning as authoritative: run `gitnexus refresh ensure --path <absolute-worktree>` and retry. For uncommitted changes, use `detect_changes`; only use `gitnexus refresh ensure --path <absolute-worktree> --force` when a graph query must include new or changed WIP symbols.
 
 Use `cypher` only when the standard tools cannot express the structural question; read `gitnexus://repo/{name}/schema` first.

@@ -1,6 +1,6 @@
 ---
 name: gitnexus-impact-analysis
-description: "Use when the user wants to know what will break if they change something, or needs safety analysis before editing code. Examples: \"Is it safe to change X?\", \"What depends on this?\", \"What will break?\""
+description: 'Use when the user wants to know what will break if they change something, or needs safety analysis before editing code. Examples: "Is it safe to change X?", "What depends on this?", "What will break?"'
 ---
 
 # Impact Analysis with GitNexus
@@ -17,18 +17,18 @@ description: "Use when the user wants to know what will break if they change som
 ## Workflow
 
 ```
-1. gitnexus_impact({target: "X", direction: "upstream"})  → What depends on this
+1. gitnexus_impact({target: "X", direction: "upstream", repo: "<absolute-worktree>"})  → What depends on this
 2. READ gitnexus://repo/{name}/processes                   → Check affected execution flows
 3. gitnexus_detect_changes()                               → Map current git changes to affected flows
 4. Assess risk and report to user
 ```
 
-> If "Index is stale" → run `npx gitnexus analyze` in terminal.
+> In a multi-worktree session, graph calls require `repo` as the absolute worktree path. The Codex freshness gate rejects aliases. If a graph call is stale or missing, run `gitnexus refresh ensure --path <absolute-worktree>`, then retry. `detect_changes` is not freshness-gated.
 
 ## Checklist
 
 ```
-- [ ] gitnexus_impact({target, direction: "upstream"}) to find dependents
+- [ ] gitnexus_impact({target, direction: "upstream", repo: "<absolute-worktree>"}) to find dependents
 - [ ] Review d=1 items first (these WILL BREAK)
 - [ ] Check high-confidence (>0.8) dependencies
 - [ ] READ processes to check affected execution flows
@@ -61,6 +61,7 @@ description: "Use when the user wants to know what will break if they change som
 gitnexus_impact({
   target: "validateUser",
   direction: "upstream",
+  repo: "<absolute-worktree>",
   minConfidence: 0.8,
   maxDepth: 3
 })
@@ -86,7 +87,7 @@ gitnexus_detect_changes({scope: "staged"})
 ## Example: "What breaks if I change validateUser?"
 
 ```
-1. gitnexus_impact({target: "validateUser", direction: "upstream"})
+1. gitnexus_impact({target: "validateUser", direction: "upstream", repo: "<absolute-worktree>"})
    → d=1: loginHandler, apiMiddleware (WILL BREAK)
    → d=2: authRouter, sessionManager (LIKELY AFFECTED)
 

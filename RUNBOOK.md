@@ -4,8 +4,8 @@ Short, copy-paste operations for **local development**, **MCP**, and **CI**. Com
 
 ## Prerequisites
 
-- **Node.js** ≥ 20 (`gitnexus-web/package.json` `engines`).  
-- **Git** (analyze requires a git repository).  
+- **Node.js** ≥ 20 (`gitnexus-web/package.json` `engines`).
+- **Git** (analyze requires a git repository).
 - From repo root, install and build the CLI package:
 
 ```bash
@@ -22,11 +22,20 @@ Use `npx gitnexus …` from any path after global/published install, or `node di
 
 **Symptom:** MCP or resources warn the index is behind `HEAD`, or results don’t reflect recent commits.
 
-**Fix (from the target repo root):**
+**Fix (for the target worktree):**
 
 ```bash
-npx gitnexus analyze
+# Run once for every worktree.
+gitnexus refresh init --path /absolute/path/to/worktree
+
+# Optional: primary checkout only. Linked worktrees share hooks and are skipped safely.
+gitnexus refresh init --path /absolute/path/to/primary-checkout --install-git-hooks
+
+# Normal stale-index recovery. Safe when multiple Codex sessions ask at once.
+gitnexus refresh ensure --path /absolute/path/to/worktree
 ```
+
+`ensure` takes the worktree analysis lock and runs `analyze --index-only`; it can bootstrap the first graph index and updates the graph and registry without rewriting `AGENTS.md` or `.agents/skills/`. Use full `analyze` only when you need those managed assets, embeddings, or an explicit repair. In multi-worktree Codex sessions, pass the same absolute worktree path as `repo` to the freshness-gated graph tools; the gate rejects aliases. `detect_changes` is not freshness-gated.
 
 **Force full rebuild** (same commit but suspect corruption or changed ignore rules):
 
@@ -37,7 +46,8 @@ npx gitnexus analyze --force
 **Check status:**
 
 ```bash
-npx gitnexus status
+gitnexus refresh status --path /absolute/path/to/worktree
+gitnexus status  # broader index health and embedding diagnostics
 ```
 
 **List what MCP knows about:**
@@ -121,10 +131,10 @@ Useful for debugging without an editor:
 
 ```bash
 cd gitnexus
-npx gitnexus query "authentication flow" --repo MyRepo
-npx gitnexus context SomeSymbol --repo MyRepo
-npx gitnexus impact SomeSymbol --direction upstream --repo MyRepo
-npx gitnexus cypher "MATCH (n) RETURN count(n) LIMIT 1" --repo MyRepo
+npx gitnexus query "authentication flow" --repo /absolute/path/to/worktree
+npx gitnexus context SomeSymbol --repo /absolute/path/to/worktree
+npx gitnexus impact SomeSymbol --direction upstream --repo /absolute/path/to/worktree
+npx gitnexus cypher "MATCH (n) RETURN count(n) LIMIT 1" --repo /absolute/path/to/worktree
 ```
 
 ---
@@ -133,12 +143,12 @@ npx gitnexus cypher "MATCH (n) RETURN count(n) LIMIT 1" --repo MyRepo
 
 Orchestrator: `.github/workflows/ci.yml`.
 
-| Job | Typical local repro |
-|-----|---------------------|
-| **quality** | `cd gitnexus && npx tsc --noEmit` |
-| **unit-tests** | `cd gitnexus && npx vitest run test/unit` |
-| **integration** | `cd gitnexus && npx vitest run test/integration` (see workflow matrix for groups) |
-| **e2e** | Triggered when `gitnexus-web/` changes; `cd gitnexus-web && E2E=1 npx playwright test` (requires `gitnexus serve` + `npm run dev`) |
+| Job             | Typical local repro                                                                                                                |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| **quality**     | `cd gitnexus && npx tsc --noEmit`                                                                                                  |
+| **unit-tests**  | `cd gitnexus && npx vitest run test/unit`                                                                                          |
+| **integration** | `cd gitnexus && npx vitest run test/integration` (see workflow matrix for groups)                                                  |
+| **e2e**         | Triggered when `gitnexus-web/` changes; `cd gitnexus-web && E2E=1 npx playwright test` (requires `gitnexus serve` + `npm run dev`) |
 
 **Note:** Pushes that touch only certain markdown paths may be skipped by `paths-ignore` in CI — see workflow file for exact patterns.
 
@@ -152,12 +162,12 @@ Analyze re-execs Node with a **large old-space heap** when needed (`analyze.ts`)
 
 ## LadybugDB / lock errors
 
-Only one process should open a repo’s `.gitnexus/lbug` store at a time. If MCP and a second `analyze` run conflict, stop one process, then retry `analyze` or restart MCP.
+The refresh coordinator serializes index writers per worktree. Use `gitnexus refresh ensure --path /absolute/path/to/worktree` instead of starting concurrent `analyze` processes. If an old external writer still holds the store, wait for it to finish; the coordinator’s stale-lock recovery handles an abandoned refresh lock, but it does not bypass a live database lock.
 
 ---
 
 ## Where to dig deeper
 
-- Architecture overview: [ARCHITECTURE.md](ARCHITECTURE.md)  
-- Agent safety rules: [GUARDRAILS.md](GUARDRAILS.md)  
+- Architecture overview: [ARCHITECTURE.md](ARCHITECTURE.md)
+- Agent safety rules: [GUARDRAILS.md](GUARDRAILS.md)
 - Tests: [TESTING.md](TESTING.md)

@@ -26,7 +26,7 @@ vi.mock('child_process', async (importOriginal) => {
 
 const pluginEntry = {
   command: 'npx',
-  args: ['-y', 'gitnexus@1.6.3', 'mcp'],
+  args: ['-y', 'gitnexus@1.6.4', 'mcp'],
 };
 
 function registration(entry = pluginEntry) {
@@ -234,7 +234,7 @@ describe('Codex setup', () => {
 
     expect(execFileMock).toHaveBeenCalledWith(
       '/usr/local/bin/codex',
-      ['mcp', 'add', 'gitnexus', '--', 'npx', '-y', 'gitnexus@1.6.3', 'mcp'],
+      ['mcp', 'add', 'gitnexus', '--', 'npx', '-y', 'gitnexus@1.6.4', 'mcp'],
       expect.objectContaining({ shell: false }),
       expect.any(Function),
     );
@@ -255,7 +255,7 @@ describe('Codex setup', () => {
 
     const config = await fs.readFile(path.join(customCodexHome, 'config.toml'), 'utf-8');
     expect(config).toContain('[mcp_servers.gitnexus]');
-    expect(config).toContain('gitnexus@1.6.3');
+    expect(config).toContain('gitnexus@1.6.4');
     await expect(
       fs.access(path.join(tempHome, '.agents', 'skills', 'gitnexus-cli', 'SKILL.md')),
     ).resolves.toBeUndefined();
@@ -279,7 +279,7 @@ describe('Codex setup', () => {
 
     const config = await fs.readFile(path.join(projectRoot, '.codex', 'config.toml'), 'utf-8');
     expect(config).toContain('[mcp_servers.gitnexus]');
-    expect(config).toContain('gitnexus@1.6.3');
+    expect(config).toContain('gitnexus@1.6.4');
     await expect(
       fs.access(path.join(projectRoot, '.agents', 'skills', 'gitnexus-cli', 'SKILL.md')),
     ).resolves.toBeUndefined();

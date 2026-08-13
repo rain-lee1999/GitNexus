@@ -1,6 +1,6 @@
 ---
 name: gitnexus-debugging
-description: "Use when the user is debugging a bug, tracing an error, or asking why something fails. Examples: \"Why is X failing?\", \"Where does this error come from?\", \"Trace this bug\""
+description: 'Use when the user is debugging a bug, tracing an error, or asking why something fails. Examples: "Why is X failing?", "Where does this error come from?", "Trace this bug"'
 ---
 
 # Debugging with GitNexus
@@ -16,13 +16,13 @@ description: "Use when the user is debugging a bug, tracing an error, or asking 
 ## Workflow
 
 ```
-1. gitnexus_query({query: "<error or symptom>"})            → Find related execution flows
-2. gitnexus_context({name: "<suspect>"})                    → See callers/callees/processes
+1. gitnexus_query({query: "<error or symptom>", repo: "<absolute-worktree>"})            → Find related execution flows
+2. gitnexus_context({name: "<suspect>", repo: "<absolute-worktree>"})                    → See callers/callees/processes
 3. READ gitnexus://repo/{name}/process/{name}                → Trace execution flow
-4. gitnexus_cypher({query: "MATCH path..."})                 → Custom traces if needed
+4. gitnexus_cypher({query: "MATCH path...", repo: "<absolute-worktree>"})                 → Custom traces if needed
 ```
 
-> If "Index is stale" → run `npx gitnexus analyze` in terminal.
+> In a multi-worktree session, graph calls require `repo` as the absolute worktree path. The Codex freshness gate rejects aliases. If a graph call is stale or missing, run `gitnexus refresh ensure --path <absolute-worktree>`, then retry. `detect_changes` is not freshness-gated.
 
 ## Checklist
 
@@ -51,7 +51,7 @@ description: "Use when the user is debugging a bug, tracing an error, or asking 
 **gitnexus_query** — find code related to error:
 
 ```
-gitnexus_query({query: "payment validation error"})
+gitnexus_query({query: "payment validation error", repo: "<absolute-worktree>"})
 → Processes: CheckoutFlow, ErrorHandling
 → Symbols: validatePayment, handlePaymentError, PaymentException
 ```
@@ -59,7 +59,7 @@ gitnexus_query({query: "payment validation error"})
 **gitnexus_context** — full context for a suspect:
 
 ```
-gitnexus_context({name: "validatePayment"})
+gitnexus_context({name: "validatePayment", repo: "<absolute-worktree>"})
 → Incoming calls: processCheckout, webhookHandler
 → Outgoing calls: verifyCard, fetchRates (external API!)
 → Processes: CheckoutFlow (step 3/7)
@@ -75,11 +75,11 @@ RETURN [n IN nodes(path) | n.name] AS chain
 ## Example: "Payment endpoint returns 500 intermittently"
 
 ```
-1. gitnexus_query({query: "payment error handling"})
+1. gitnexus_query({query: "payment error handling", repo: "<absolute-worktree>"})
    → Processes: CheckoutFlow, ErrorHandling
    → Symbols: validatePayment, handlePaymentError
 
-2. gitnexus_context({name: "validatePayment"})
+2. gitnexus_context({name: "validatePayment", repo: "<absolute-worktree>"})
    → Outgoing calls: verifyCard, fetchRates (external API!)
 
 3. READ gitnexus://repo/my-app/process/CheckoutFlow

@@ -10,6 +10,8 @@ import fs from 'fs/promises';
 import { realpathSync } from 'fs';
 import path from 'path';
 import os from 'os';
+import { createHash, randomUUID } from 'crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { getInferredRepoName } from './git.js';
 
 /**
@@ -110,6 +112,29 @@ export interface RegistryEntry {
 const GITNEXUS_DIR = '.gitnexus';
 const GITNEXUS_EXCLUDE_ENTRY = `${GITNEXUS_DIR}/`;
 const ANALYZE_INCOMPLETE_MARKER = 'analyze-incomplete.json';
+const REFRESH_LOCK_DIR = 'refresh';
+const ANALYSIS_LOCK_DIR = 'analysis';
+const ANALYSIS_LOCK_NAME = 'analysis.lock';
+const REGISTRY_LOCK_NAME = 'registry.lock';
+const LOCK_OWNER_FILE = 'owner.json';
+
+/**
+ * A lock holder refreshes the directory mtime while it is alive. The stale
+ * window is deliberately much longer than normal indexing work: a slow
+ * analysis must never be stolen merely because it takes a few minutes.
+ */
+const DEFAULT_LOCK_STALE_AFTER_MS = 30 * 60 * 1000;
+const DEFAULT_LOCK_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_LOCK_RETRY_DELAY_MS = 100;
+const MAX_LOCK_HEARTBEAT_MS = 30 * 1000;
+
+/**
+ * Re-entrancy is scoped to one asynchronous call tree, not the whole Node
+ * process. Registry-maintenance code can call a helper that also needs the
+ * registry lock without deadlocking, whereas an unrelated simultaneous
+ * analysis in the same MCP process must still wait for that short mutation.
+ */
+const heldLocks = new AsyncLocalStorage<Set<string>>();
 
 export const LBUG_SIDECAR_SUFFIXES = ['', '.wal', '.lock', '.shadow', '.wal.checkpoint'] as const;
 
@@ -157,6 +182,260 @@ const pathExists = async (p: string): Promise<boolean> => {
   }
 };
 
+export interface LockOptions {
+  /** Maximum time to wait for a live lock holder before failing. */
+  waitTimeoutMs?: number;
+  /** A lock whose heartbeat is older than this can be recovered. */
+  staleAfterMs?: number;
+  /** Delay between attempts to acquire a contended lock. */
+  retryDelayMs?: number;
+}
+
+export interface AcquiredLock {
+  lockPath: string;
+  release: () => Promise<void>;
+}
+
+/**
+ * Raised instead of silently running a second writer when a live analysis is
+ * still holding a lock. Callers can retry or surface an actionable message.
+ */
+export class GitNexusLockTimeoutError extends Error {
+  readonly kind = 'GitNexusLockTimeoutError' as const;
+
+  constructor(
+    public readonly lockPath: string,
+    public readonly waitTimeoutMs: number,
+  ) {
+    super(
+      `Timed out waiting ${waitTimeoutMs}ms for GitNexus writer lock at ${lockPath}. ` +
+        `Another analysis or registry update is still active; retry after it finishes.`,
+    );
+    this.name = 'GitNexusLockTimeoutError';
+  }
+}
+
+interface LockOwner {
+  token: string;
+  acquiredAt: string;
+}
+
+interface ResolvedLockOptions {
+  waitTimeoutMs: number;
+  staleAfterMs: number;
+  retryDelayMs: number;
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+const parsePositiveDuration = (value: string | undefined, fallback: number): number => {
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : fallback;
+};
+
+const resolveLockOptions = (options?: LockOptions): ResolvedLockOptions => ({
+  waitTimeoutMs:
+    options?.waitTimeoutMs ??
+    parsePositiveDuration(process.env.GITNEXUS_LOCK_WAIT_TIMEOUT_MS, DEFAULT_LOCK_WAIT_TIMEOUT_MS),
+  staleAfterMs:
+    options?.staleAfterMs ??
+    parsePositiveDuration(process.env.GITNEXUS_LOCK_STALE_AFTER_MS, DEFAULT_LOCK_STALE_AFTER_MS),
+  retryDelayMs:
+    options?.retryDelayMs ??
+    parsePositiveDuration(process.env.GITNEXUS_LOCK_RETRY_DELAY_MS, DEFAULT_LOCK_RETRY_DELAY_MS),
+});
+
+const getLockOwnerPath = (lockPath: string): string => path.join(lockPath, LOCK_OWNER_FILE);
+
+const readLockOwner = async (lockPath: string): Promise<LockOwner | undefined> => {
+  try {
+    const raw = await fs.readFile(getLockOwnerPath(lockPath), 'utf-8');
+    const parsed = JSON.parse(raw) as Partial<LockOwner>;
+    if (typeof parsed.token !== 'string' || typeof parsed.acquiredAt !== 'string') return undefined;
+    return { token: parsed.token, acquiredAt: parsed.acquiredAt };
+  } catch {
+    return undefined;
+  }
+};
+
+const isStaleLock = async (lockPath: string, staleAfterMs: number): Promise<boolean> => {
+  try {
+    const stat = await fs.stat(lockPath);
+    return Date.now() - stat.mtimeMs >= staleAfterMs;
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') return false;
+    throw err;
+  }
+};
+
+/**
+ * Move an expired lock out of the acquisition path before removing it. This
+ * is safer than blindly `rm`-ing a lock path: a concurrent releaser can only
+ * make the rename fail/retry, never cause us to delete a newly-created lock.
+ *
+ * Lock ownership intentionally uses an opaque token plus a heartbeat, rather
+ * than a PID file. PIDs are not reliable across containers, restarts, or
+ * reused process namespaces.
+ */
+const recoverStaleLock = async (lockPath: string, staleAfterMs: number): Promise<boolean> => {
+  if (!(await isStaleLock(lockPath, staleAfterMs))) return false;
+
+  const observedOwner = await readLockOwner(lockPath);
+  const quarantinePath = `${lockPath}.stale-${randomUUID()}`;
+
+  try {
+    await fs.rename(lockPath, quarantinePath);
+  } catch (err: any) {
+    // A live owner/releaser won the race; retry normal acquisition instead.
+    if (err?.code === 'ENOENT' || err?.code === 'EEXIST') return false;
+    throw err;
+  }
+
+  // If a new owner appeared between the stale check and the atomic rename,
+  // restore its lock rather than treating it as abandoned. This cannot make a
+  // stale lock live again in the normal case because the opaque token remains
+  // stable for the lifetime of one acquisition.
+  const quarantinedOwner = await readLockOwner(quarantinePath);
+  if (
+    observedOwner?.token !== undefined &&
+    quarantinedOwner?.token !== undefined &&
+    observedOwner.token !== quarantinedOwner.token
+  ) {
+    try {
+      await fs.rename(quarantinePath, lockPath);
+    } catch {
+      // A fresh owner acquired the canonical path. Keep the quarantined
+      // directory for later inspection rather than deleting unknown state.
+    }
+    return false;
+  }
+
+  await fs.rm(quarantinePath, { recursive: true, force: true });
+  return true;
+};
+
+/**
+ * Acquire a cross-process directory lock. The directory creation is atomic
+ * on supported filesystems; its mtime acts as a lease heartbeat so locks left
+ * behind by a crash are recoverable without trusting a PID.
+ */
+export const acquireFileLock = async (
+  lockPath: string,
+  options?: LockOptions,
+): Promise<AcquiredLock> => {
+  const resolved = resolveLockOptions(options);
+  const startedAt = Date.now();
+
+  await fs.mkdir(path.dirname(lockPath), { recursive: true });
+
+  for (;;) {
+    const token = randomUUID();
+    try {
+      await fs.mkdir(lockPath);
+      try {
+        await fs.writeFile(
+          getLockOwnerPath(lockPath),
+          JSON.stringify({ token, acquiredAt: new Date().toISOString() } satisfies LockOwner),
+          'utf-8',
+        );
+      } catch (err) {
+        await fs.rm(lockPath, { recursive: true, force: true });
+        throw err;
+      }
+
+      const heartbeatMs = Math.max(
+        250,
+        Math.min(MAX_LOCK_HEARTBEAT_MS, Math.floor(resolved.staleAfterMs / 3)),
+      );
+      const heartbeat = setInterval(() => {
+        const now = new Date();
+        void fs.utimes(lockPath, now, now).catch(() => {
+          // Release/recovery races are handled by the ownership-token check
+          // below. A failed heartbeat must not turn into an unhandled error.
+        });
+      }, heartbeatMs);
+      heartbeat.unref?.();
+
+      let released = false;
+      return {
+        lockPath,
+        release: async () => {
+          if (released) return;
+          released = true;
+          clearInterval(heartbeat);
+
+          // Never delete a lock we no longer own. This protects a caller that
+          // outlives an expired lease and a later recovery/acquisition.
+          const owner = await readLockOwner(lockPath);
+          if (owner?.token !== token) return;
+          await fs.rm(lockPath, { recursive: true, force: true });
+        },
+      };
+    } catch (err: any) {
+      if (err?.code !== 'EEXIST') throw err;
+
+      if (await recoverStaleLock(lockPath, resolved.staleAfterMs)) continue;
+
+      if (Date.now() - startedAt >= resolved.waitTimeoutMs) {
+        throw new GitNexusLockTimeoutError(lockPath, resolved.waitTimeoutMs);
+      }
+      await sleep(resolved.retryDelayMs);
+    }
+  }
+};
+
+/** Run a callback while holding a cross-process lock, releasing on all exits. */
+export const withFileLock = async <T>(
+  lockPath: string,
+  callback: () => Promise<T>,
+  options?: LockOptions,
+): Promise<T> => {
+  const canonicalLockPath = path.resolve(lockPath);
+  const currentLocks = heldLocks.getStore();
+  if (currentLocks?.has(canonicalLockPath)) {
+    return callback();
+  }
+
+  const lock = await acquireFileLock(lockPath, options);
+  const nextLocks = new Set(currentLocks ?? []);
+  nextLocks.add(canonicalLockPath);
+  try {
+    return await heldLocks.run(nextLocks, callback);
+  } finally {
+    await lock.release();
+  }
+};
+
+/**
+ * The per-worktree analysis lock lives under the canonical global GitNexus
+ * home, not beneath the worktree's `.gitnexus/` directory. `clean --force`
+ * is allowed to remove that directory while it holds this lock; anchoring the
+ * lock there would let the deletion unlink a live lock and allow a second
+ * analysis to start concurrently.
+ *
+ * The canonical worktree path is SHA-256 keyed so distinct worktrees retain
+ * independent locks without exposing arbitrary absolute paths in the global
+ * lock directory. `getGlobalDir()` is canonicalized too, so equivalent
+ * `GITNEXUS_HOME` spellings (for example `/var` vs `/private/var`) converge
+ * on the same external anchor.
+ */
+export const getAnalysisLockPath = (repoPath: string): string => {
+  const worktreeKey = createHash('sha256').update(canonicalizePath(repoPath)).digest('hex');
+  return path.join(
+    getGlobalDir(),
+    REFRESH_LOCK_DIR,
+    ANALYSIS_LOCK_DIR,
+    `${worktreeKey}.${ANALYSIS_LOCK_NAME}`,
+  );
+};
+
+export const withAnalysisLock = async <T>(
+  repoPath: string,
+  callback: () => Promise<T>,
+  options?: LockOptions,
+): Promise<T> => withFileLock(getAnalysisLockPath(repoPath), callback, options);
+
 export const getAnalysisIncompleteMarkerPath = (storagePath: string): string =>
   path.join(storagePath, ANALYZE_INCOMPLETE_MARKER);
 
@@ -176,8 +455,10 @@ export const clearAnalysisIncompleteMarker = async (storagePath: string): Promis
   await fs.rm(getAnalysisIncompleteMarkerPath(storagePath), { force: true });
 };
 
-export const createTempLbugPath = (storagePath: string, tag = `${process.pid}-${Date.now()}`): string =>
-  path.join(storagePath, `lbug.tmp-${tag}`);
+export const createTempLbugPath = (
+  storagePath: string,
+  tag = `${process.pid}-${Date.now()}`,
+): string => path.join(storagePath, `lbug.tmp-${tag}`);
 
 export const getLbugArtifactPaths = (lbugPath: string): string[] =>
   LBUG_SIDECAR_SUFFIXES.map((suffix) => `${lbugPath}${suffix}`);
@@ -209,7 +490,10 @@ export const cleanupTempLbugArtifacts = async (storagePath: string): Promise<voi
   }
 };
 
-export const promoteLbugDatabase = async (tempLbugPath: string, finalLbugPath: string): Promise<void> => {
+export const promoteLbugDatabase = async (
+  tempLbugPath: string,
+  finalLbugPath: string,
+): Promise<void> => {
   const tempArtifacts = await getExistingLbugArtifacts(tempLbugPath);
   const hasMainDb = tempArtifacts.includes(tempLbugPath);
   if (!hasMainDb) {
@@ -452,8 +736,25 @@ const ensureGitInfoExclude = async (repoPath: string): Promise<void> => {
  * Get the path to the global GitNexus directory
  */
 export const getGlobalDir = (): string => {
-  return process.env.GITNEXUS_HOME || path.join(os.homedir(), '.gitnexus');
+  // Keep registry data and its transaction lock on the same physical path.
+  // In particular, macOS exposes /var as a symlink to /private/var; using
+  // raw spellings here would let two processes lock different directories
+  // while atomically replacing the same registry file.
+  return canonicalizePath(process.env.GITNEXUS_HOME || path.join(os.homedir(), '.gitnexus'));
 };
+
+/** Global transaction lock for read-modify-write updates to registry.json. */
+export const getGlobalRegistryLockPath = (): string =>
+  path.join(getGlobalDir(), REFRESH_LOCK_DIR, REGISTRY_LOCK_NAME);
+
+/**
+ * Serialize registry mutations across CLI, MCP, and worker processes. Reads
+ * remain lock-free because registry writes use atomic replacement below.
+ */
+export const withGlobalRegistryLock = async <T>(
+  callback: () => Promise<T>,
+  options?: LockOptions,
+): Promise<T> => withFileLock(getGlobalRegistryLockPath(), callback, options);
 
 /**
  * Get the path to the global registry file
@@ -480,8 +781,18 @@ export const readRegistry = async (): Promise<RegistryEntry[]> => {
  */
 const writeRegistry = async (entries: RegistryEntry[]): Promise<void> => {
   const dir = getGlobalDir();
+  const registryPath = getGlobalRegistryPath();
+  const tempPath = `${registryPath}.tmp-${randomUUID()}`;
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(getGlobalRegistryPath(), JSON.stringify(entries, null, 2), 'utf-8');
+  try {
+    await fs.writeFile(tempPath, JSON.stringify(entries, null, 2), 'utf-8');
+    // `rename` replaces the prior file atomically on supported local filesystems,
+    // so lock-free readers observe either the old complete registry or the new
+    // complete registry — never a partial JSON write.
+    await fs.rename(tempPath, registryPath);
+  } finally {
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+  }
 };
 
 /**
@@ -587,118 +898,120 @@ export const registerRepo = async (
   repoPath: string,
   meta: RepoMeta,
   opts?: RegisterRepoOptions,
-): Promise<string> => {
-  // Preserve the caller's chosen path form in the registry — don't
-  // canonicalise at write time. This matters for two reasons:
-  //   1. `list` and error messages show the path the user actually
-  //      knows (e.g. the 8.3 short form they typed), not a runtime-
-  //      resolved long form they've never seen.
-  //   2. Keeps pre-existing #829 test assertions that compare
-  //      `err.existingPath` against `path.resolve(tmpPath)` stable.
-  // Canonicalisation is applied at COMPARE points only (see below),
-  // which is where the cross-platform divergence actually matters.
-  const resolved = path.resolve(repoPath);
-  const { storagePath } = getStoragePaths(resolved);
+): Promise<string> =>
+  withGlobalRegistryLock(async () => {
+    // Preserve the caller's chosen path form in the registry — don't
+    // canonicalise at write time. This matters for two reasons:
+    //   1. `list` and error messages show the path the user actually
+    //      knows (e.g. the 8.3 short form they typed), not a runtime-
+    //      resolved long form they've never seen.
+    //   2. Keeps pre-existing #829 test assertions that compare
+    //      `err.existingPath` against `path.resolve(tmpPath)` stable.
+    // Canonicalisation is applied at COMPARE points only (see below),
+    // which is where the cross-platform divergence actually matters.
+    const resolved = path.resolve(repoPath);
+    const { storagePath } = getStoragePaths(resolved);
 
-  // Canonical form used strictly for comparison — `realpathSync.native`
-  // expands macOS /var → /private/var and Windows 8.3 → long-name,
-  // falling back to `path.resolve` when the path doesn't exist.
-  const canonicalInput = canonicalizePath(repoPath);
+    // Canonical form used strictly for comparison — `realpathSync.native`
+    // expands macOS /var → /private/var and Windows 8.3 → long-name,
+    // falling back to `path.resolve` when the path doesn't exist.
+    const canonicalInput = canonicalizePath(repoPath);
 
-  const entries = await readRegistry();
-  const existingIdx = entries.findIndex((e) => {
-    // Canonicalise the STORED entry too so pre-canonicalisation
-    // registries (written by older versions, or paths passed in a
-    // different form) still match correctly. `canonicalizePath` falls
-    // back to `path.resolve` when the path no longer exists on disk,
-    // so stale entries that have been rm'd externally still resolve
-    // to a stable key instead of throwing.
-    const a = canonicalizePath(e.path);
-    const b = canonicalInput;
-    return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
-  });
-  const existing = existingIdx >= 0 ? entries[existingIdx] : null;
+    const entries = await readRegistry();
+    const existingIdx = entries.findIndex((e) => {
+      // Canonicalise the STORED entry too so pre-canonicalisation
+      // registries (written by older versions, or paths passed in a
+      // different form) still match correctly. `canonicalizePath` falls
+      // back to `path.resolve` when the path no longer exists on disk,
+      // so stale entries that have been rm'd externally still resolve
+      // to a stable key instead of throwing.
+      const a = canonicalizePath(e.path);
+      const b = canonicalInput;
+      return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+    });
+    const existing = existingIdx >= 0 ? entries[existingIdx] : null;
 
-  // Precedence: explicit --name > preserved alias > remote-inferred > basename.
-  // Skip the `git config` subprocess entirely when --name was passed —
-  // the remote isn't consulted in that case.
-  let name: string;
-  let isPreservedAlias = false;
-  if (opts?.name !== undefined) {
-    name = opts.name;
-  } else {
-    // Compute the remote-derived name at most once. It feeds both the
-    // alias-preservation check (`hasCustomAlias` needs it to distinguish
-    // a sticky user alias from a previously-stored remote inference) and
-    // the fallback name when neither --name nor a preserved alias apply.
-    const inferred = getInferredRepoName(resolved);
-    if (existing && hasCustomAlias(existing, inferred)) {
-      name = existing.name;
-      isPreservedAlias = true;
+    // Precedence: explicit --name > preserved alias > remote-inferred > basename.
+    // Skip the `git config` subprocess entirely when --name was passed —
+    // the remote isn't consulted in that case.
+    let name: string;
+    let isPreservedAlias = false;
+    if (opts?.name !== undefined) {
+      name = opts.name;
     } else {
-      name = inferred ?? path.basename(resolved);
+      // Compute the remote-derived name at most once. It feeds both the
+      // alias-preservation check (`hasCustomAlias` needs it to distinguish
+      // a sticky user alias from a previously-stored remote inference) and
+      // the fallback name when neither --name nor a preserved alias apply.
+      const inferred = getInferredRepoName(resolved);
+      if (existing && hasCustomAlias(existing, inferred)) {
+        name = existing.name;
+        isPreservedAlias = true;
+      } else {
+        name = inferred ?? path.basename(resolved);
+      }
     }
-  }
 
-  // Duplicate-name guard: only fire when the user EXPLICITLY asked for
-  // this name (via opts.name or a preserved alias). Unqualified basename
-  // and remote-inferred collisions are preserved for backward-compat —
-  // they still register, and the user sees the ambiguity at `-r` / `list`
-  // resolution time (which is already improved by the disambiguated error
-  // messages and list output #829 ships).
-  const explicitName = opts?.name !== undefined || isPreservedAlias;
-  if (explicitName && !opts?.allowDuplicateName) {
-    // Compare canonical-vs-canonical here too so `/var/foo` and
-    // `/private/var/foo` (same repo, different form) aren't treated as
-    // two colliding paths.
-    const collidingEntry = entries.find(
-      (e, i) =>
-        i !== existingIdx &&
-        e.name.toLowerCase() === name.toLowerCase() &&
-        canonicalizePath(e.path) !== canonicalInput,
-    );
-    if (collidingEntry) {
-      throw new RegistryNameCollisionError(name, collidingEntry.path, resolved);
+    // Duplicate-name guard: only fire when the user EXPLICITLY asked for
+    // this name (via opts.name or a preserved alias). Unqualified basename
+    // and remote-inferred collisions are preserved for backward-compat —
+    // they still register, and the user sees the ambiguity at `-r` / `list`
+    // resolution time (which is already improved by the disambiguated error
+    // messages and list output #829 ships).
+    const explicitName = opts?.name !== undefined || isPreservedAlias;
+    if (explicitName && !opts?.allowDuplicateName) {
+      // Compare canonical-vs-canonical here too so `/var/foo` and
+      // `/private/var/foo` (same repo, different form) aren't treated as
+      // two colliding paths.
+      const collidingEntry = entries.find(
+        (e, i) =>
+          i !== existingIdx &&
+          e.name.toLowerCase() === name.toLowerCase() &&
+          canonicalizePath(e.path) !== canonicalInput,
+      );
+      if (collidingEntry) {
+        throw new RegistryNameCollisionError(name, collidingEntry.path, resolved);
+      }
     }
-  }
 
-  const entry: RegistryEntry = {
-    name,
-    path: resolved,
-    storagePath,
-    indexedAt: meta.indexedAt,
-    lastCommit: meta.lastCommit,
-    remoteUrl: meta.remoteUrl,
-    stats: meta.stats,
-  };
+    const entry: RegistryEntry = {
+      name,
+      path: resolved,
+      storagePath,
+      indexedAt: meta.indexedAt,
+      lastCommit: meta.lastCommit,
+      remoteUrl: meta.remoteUrl,
+      stats: meta.stats,
+    };
 
-  if (existingIdx >= 0) {
-    entries[existingIdx] = entry;
-  } else {
-    entries.push(entry);
-  }
+    if (existingIdx >= 0) {
+      entries[existingIdx] = entry;
+    } else {
+      entries.push(entry);
+    }
 
-  await writeRegistry(entries);
-  return name;
-};
+    await writeRegistry(entries);
+    return name;
+  });
 
 /**
  * Remove a repo from the global registry.
  * Called after `gitnexus clean`.
  */
-export const unregisterRepo = async (repoPath: string): Promise<void> => {
-  // Canonicalise BOTH sides so an unregister call issued with the
-  // symlink form (`/var/folders/.../repo`) still matches an entry
-  // written with the realpath form (`/private/var/folders/.../repo`),
-  // and vice versa. Matches the semantics of `registerRepo` and
-  // `resolveRegistryEntry` post-#1003 review.
-  const resolved = canonicalizePath(repoPath);
-  const entries = await readRegistry();
-  const matches = (a: string, b: string) =>
-    process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
-  const filtered = entries.filter((e) => !matches(canonicalizePath(e.path), resolved));
-  await writeRegistry(filtered);
-};
+export const unregisterRepo = async (repoPath: string): Promise<void> =>
+  withGlobalRegistryLock(async () => {
+    // Canonicalise BOTH sides so an unregister call issued with the
+    // symlink form (`/var/folders/.../repo`) still matches an entry
+    // written with the realpath form (`/private/var/folders/.../repo`),
+    // and vice versa. Matches the semantics of `registerRepo` and
+    // `resolveRegistryEntry` post-#1003 review.
+    const resolved = canonicalizePath(repoPath);
+    const entries = await readRegistry();
+    const matches = (a: string, b: string) =>
+      process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+    const filtered = entries.filter((e) => !matches(canonicalizePath(e.path), resolved));
+    await writeRegistry(filtered);
+  });
 
 /**
  * Thrown by {@link resolveRegistryEntry} when no registered repo matches
@@ -973,23 +1286,27 @@ export const listRegisteredRepos = async (opts?: {
   const entries = await readRegistry();
   if (!opts?.validate) return entries;
 
-  // Validate each entry still has a .gitnexus/ directory
-  const valid: RegistryEntry[] = [];
-  for (const entry of entries) {
-    try {
-      await fs.access(path.join(entry.storagePath, 'meta.json'));
-      valid.push(entry);
-    } catch {
-      // Index no longer exists — skip
+  // Validation may prune dead entries, which is a registry mutation. Re-read
+  // under the transaction lock so a concurrent analyze cannot be lost between
+  // the original snapshot and the cleanup write.
+  return withGlobalRegistryLock(async () => {
+    const currentEntries = await readRegistry();
+    const valid: RegistryEntry[] = [];
+    for (const entry of currentEntries) {
+      try {
+        await fs.access(path.join(entry.storagePath, 'meta.json'));
+        valid.push(entry);
+      } catch {
+        // Index no longer exists — skip
+      }
     }
-  }
 
-  // If we pruned any entries, save the cleaned registry
-  if (valid.length !== entries.length) {
-    await writeRegistry(valid);
-  }
+    if (valid.length !== currentEntries.length) {
+      await writeRegistry(valid);
+    }
 
-  return valid;
+    return valid;
+  });
 };
 
 // ─── Global CLI Config (~/.gitnexus/config.json) ─────────────────────────

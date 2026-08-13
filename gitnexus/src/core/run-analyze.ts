@@ -35,6 +35,7 @@ import {
   createTempLbugPath,
   promoteLbugDatabase,
   getIndexHealth,
+  withAnalysisLock,
 } from '../storage/repo-manager.js';
 import { getCurrentCommit, getRemoteUrl, hasGitDir, getInferredRepoName } from '../storage/git.js';
 import type { CachedEmbedding } from './embeddings/types.js';
@@ -74,6 +75,12 @@ export interface AnalyzeOptions {
   skipAgentsMd?: boolean;
   /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
   noStats?: boolean;
+  /**
+   * Build only the graph index, metadata, and global registry entry. This is
+   * intended for automatic refreshers: it must never write repository agent
+   * instruction assets (AGENTS.md or .agents/skills).
+   */
+  indexOnly?: boolean;
   /**
    * User-provided alias for the registry `name` (#829). When set,
    * forwarded to `registerRepo` so the indexed repo is stored under
@@ -152,6 +159,18 @@ export async function runFullAnalysis(
   options: AnalyzeOptions,
   callbacks: AnalyzeCallbacks,
 ): Promise<AnalyzeResult> {
+  // The whole pipeline is mutually exclusive per worktree. Registry mutation
+  // is independently serialized inside registerRepo(), so different worktrees
+  // can parse/load their separate indexes concurrently and contend only for
+  // the short global registry read-modify-write transaction at finalization.
+  return withAnalysisLock(repoPath, () => runFullAnalysisUnlocked(repoPath, options, callbacks));
+}
+
+async function runFullAnalysisUnlocked(
+  repoPath: string,
+  options: AnalyzeOptions,
+  callbacks: AnalyzeCallbacks,
+): Promise<AnalyzeResult> {
   const log = (msg: string) => callbacks.onLog?.(msg);
   const progress = (phase: string, percent: number, message: string) =>
     callbacks.onProgress(phase, percent, message);
@@ -181,7 +200,8 @@ export async function runFullAnalysis(
       } else {
         await ensureGitNexusIgnored(repoPath);
         return {
-          repoName: options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath),
+          repoName:
+            options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath),
           repoPath,
           stats: existingMeta.stats ?? {},
           alreadyUpToDate: true,
@@ -476,24 +496,26 @@ export async function runFullAnalysis(
       aggregatedClusterCount = Array.from(groups.values()).filter((count) => count >= 5).length;
     }
 
-    try {
-      await generateAIContextFiles(
-        repoPath,
-        storagePath,
-        projectName,
-        {
-          files: pipelineResult.totalFileCount,
-          nodes: stats.nodes,
-          edges: stats.edges,
-          communities: pipelineResult.communityResult?.stats.totalCommunities,
-          clusters: aggregatedClusterCount,
-          processes: pipelineResult.processResult?.stats.totalProcesses,
-        },
-        undefined,
-        { skipAgentsMd: options.skipAgentsMd, noStats: options.noStats },
-      );
-    } catch {
-      // Best-effort — don't fail the entire analysis for context file issues
+    if (!options.indexOnly) {
+      try {
+        await generateAIContextFiles(
+          repoPath,
+          storagePath,
+          projectName,
+          {
+            files: pipelineResult.totalFileCount,
+            nodes: stats.nodes,
+            edges: stats.edges,
+            communities: pipelineResult.communityResult?.stats.totalCommunities,
+            clusters: aggregatedClusterCount,
+            processes: pipelineResult.processResult?.stats.totalProcesses,
+          },
+          undefined,
+          { skipAgentsMd: options.skipAgentsMd, noStats: options.noStats },
+        );
+      } catch {
+        // Best-effort — don't fail the entire analysis for context file issues
+      }
     }
 
     // ── Close LadybugDB ──────────────────────────────────────────────

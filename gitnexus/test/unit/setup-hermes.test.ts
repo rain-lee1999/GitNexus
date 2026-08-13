@@ -106,7 +106,7 @@ describe('setupCommand Hermes support', () => {
 
     expect(spawnMock).toHaveBeenCalledWith(
       '/usr/local/bin/hermes',
-      ['mcp', 'add', 'gitnexus', '--command', 'npx', '--args', '-y', 'gitnexus@1.6.3', 'mcp'],
+      ['mcp', 'add', 'gitnexus', '--command', 'npx', '--args', '-y', 'gitnexus@1.6.4', 'mcp'],
       { shell: false, stdio: ['pipe', 'pipe', 'pipe'] },
     );
     expect(spawnMock.mock.results[0].value.stdin.end).toHaveBeenCalledWith('Y\n');

@@ -1,6 +1,6 @@
 ---
 name: gitnexus-exploring
-description: "Use when the user asks how code works, wants to understand architecture, trace execution flows, or explore unfamiliar parts of the codebase. Examples: \"How does X work?\", \"What calls this function?\", \"Show me the auth flow\""
+description: 'Use when the user asks how code works, wants to understand architecture, trace execution flows, or explore unfamiliar parts of the codebase. Examples: "How does X work?", "What calls this function?", "Show me the auth flow"'
 ---
 
 # Exploring Codebases with GitNexus
@@ -18,12 +18,12 @@ description: "Use when the user asks how code works, wants to understand archite
 ```
 1. READ gitnexus://repos                          → Discover indexed repos
 2. READ gitnexus://repo/{name}/context             → Codebase overview, check staleness
-3. gitnexus_query({query: "<what you want to understand>"})  → Find related execution flows
-4. gitnexus_context({name: "<symbol>"})            → Deep dive on specific symbol
+3. gitnexus_query({query: "<what you want to understand>", repo: "<absolute-worktree>"})  → Find related execution flows
+4. gitnexus_context({name: "<symbol>", repo: "<absolute-worktree>"})            → Deep dive on specific symbol
 5. READ gitnexus://repo/{name}/process/{name}      → Trace full execution flow
 ```
 
-> If step 2 says "Index is stale" → run `npx gitnexus analyze` in terminal.
+> In a multi-worktree session, graph calls require `repo` as the absolute worktree path. The Codex freshness gate rejects aliases. If a graph call is stale or missing, run `gitnexus refresh ensure --path <absolute-worktree>`, then retry. `detect_changes` is not freshness-gated.
 
 ## Checklist
 
@@ -50,7 +50,7 @@ description: "Use when the user asks how code works, wants to understand archite
 **gitnexus_query** — find execution flows related to a concept:
 
 ```
-gitnexus_query({query: "payment processing"})
+gitnexus_query({query: "payment processing", repo: "<absolute-worktree>"})
 → Processes: CheckoutFlow, RefundFlow, WebhookHandler
 → Symbols grouped by flow with file locations
 ```
@@ -58,7 +58,7 @@ gitnexus_query({query: "payment processing"})
 **gitnexus_context** — 360-degree view of a symbol:
 
 ```
-gitnexus_context({name: "validateUser"})
+gitnexus_context({name: "validateUser", repo: "<absolute-worktree>"})
 → Incoming calls: loginHandler, apiMiddleware
 → Outgoing calls: checkToken, getUserById
 → Processes: LoginFlow (step 2/5), TokenRefresh (step 1/3)
@@ -68,10 +68,10 @@ gitnexus_context({name: "validateUser"})
 
 ```
 1. READ gitnexus://repo/my-app/context       → 918 symbols, 45 processes
-2. gitnexus_query({query: "payment processing"})
+2. gitnexus_query({query: "payment processing", repo: "<absolute-worktree>"})
    → CheckoutFlow: processPayment → validateCard → chargeStripe
    → RefundFlow: initiateRefund → calculateRefund → processRefund
-3. gitnexus_context({name: "processPayment"})
+3. gitnexus_context({name: "processPayment", repo: "<absolute-worktree>"})
    → Incoming: checkoutHandler, webhookHandler
    → Outgoing: validateCard, chargeStripe, saveTransaction
 4. Read src/payments/processor.ts for implementation details

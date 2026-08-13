@@ -26,6 +26,23 @@ That's it. This indexes the codebase and creates Codex-native `AGENTS.md` plus r
 
 To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
 
+### Worktree-safe refresh
+
+Use `refresh ensure` for the first graph index and for ordinary graph freshness. Use a full `analyze` only when you want managed `AGENTS.md`/skills, embeddings, or an explicit repair. Initialize every worktree once; only a primary checkout using conventional hooks may install Git-side stale markers:
+
+```bash
+# Run once in every worktree.
+gitnexus refresh init --path /absolute/path/to/worktree
+
+# Optional: primary checkout only. Linked worktrees share Git hooks and are skipped safely.
+gitnexus refresh init --path /absolute/path/to/primary-checkout --install-git-hooks
+
+# Safe to call from concurrent Codex sessions; one writer per worktree.
+gitnexus refresh ensure --path /absolute/path/to/worktree
+```
+
+`refresh ensure` serializes writers and runs `analyze --index-only`, so it never rewrites `AGENTS.md` or `.agents/skills/`. The Codex graph gate queues this refresh on demand when a stale graph query is attempted, then denies that one call; retry when it completes, or use `ensure` above when the task must wait. For the freshness-gated graph tools (`query`, `cypher`, `context`, `impact`, `route_map`, `tool_map`, `shape_check`, and `api_impact`), pass `repo` explicitly as the absolute worktree path; the gate intentionally rejects aliases. `detect_changes` is intentionally not freshness-gated. If `core.hooksPath` is already managed by Husky, another dispatcher, or the checkout is linked, `init --install-git-hooks` safely reports a skip instead of changing project hook files.
+
 `gitnexus setup` auto-detects your editors and writes the correct global MCP config. You only need to run it once.
 
 ### Editor Support
@@ -42,8 +59,8 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 
 ### Community Integrations
 
-| Agent | Install | Source |
-|-------|---------|--------|
+| Agent                | Install                      | Source                                                  |
+| -------------------- | ---------------------------- | ------------------------------------------------------- |
 | [pi](https://pi.dev) | `pi install npm:pi-gitnexus` | [pi-gitnexus](https://github.com/tintinweb/pi-gitnexus) |
 
 ## MCP Setup (manual)
@@ -113,50 +130,53 @@ The result is a **LadybugDB graph database** stored locally in `.gitnexus/` with
 Your AI agent gets **13 tools** automatically:
 
 <!-- gitnexus:mcp-tools:start -->
-| Tool | What It Does | `repo` Param |
-|------|-------------|--------------|
-| `list_repos` | Discover all indexed repositories | — |
-| `query` | Process-grouped hybrid search (BM25 + semantic + RRF) | Optional |
-| `cypher` | Read-only Cypher queries against the code graph | Optional |
-| `context` | 360-degree symbol view — categorized refs, process participation | Optional |
-| `detect_changes` | Git-diff impact — maps changed lines to affected processes | Optional |
-| `rename` | Multi-file coordinated rename with graph + text search | Optional |
-| `impact` | Blast radius analysis with depth grouping and confidence | Optional |
-| `route_map` | Map API routes to handlers, middleware, and consumers | Optional |
-| `tool_map` | Map MCP/RPC tools to definitions and handlers | Optional |
-| `shape_check` | Detect API response/consumer shape drift | Optional |
-| `api_impact` | Pre-change impact report for an API route | Optional |
-| `group_list` | List configured repository groups | — |
-| `group_sync` | Extract contracts and match across repositories | — |
+
+| Tool             | What It Does                                                     | `repo` Param |
+| ---------------- | ---------------------------------------------------------------- | ------------ |
+| `list_repos`     | Discover all indexed repositories                                | —            |
+| `query`          | Process-grouped hybrid search (BM25 + semantic + RRF)            | Optional     |
+| `cypher`         | Read-only Cypher queries against the code graph                  | Optional     |
+| `context`        | 360-degree symbol view — categorized refs, process participation | Optional     |
+| `detect_changes` | Git-diff impact — maps changed lines to affected processes       | Optional     |
+| `rename`         | Multi-file coordinated rename with graph + text search           | Optional     |
+| `impact`         | Blast radius analysis with depth grouping and confidence         | Optional     |
+| `route_map`      | Map API routes to handlers, middleware, and consumers            | Optional     |
+| `tool_map`       | Map MCP/RPC tools to definitions and handlers                    | Optional     |
+| `shape_check`    | Detect API response/consumer shape drift                         | Optional     |
+| `api_impact`     | Pre-change impact report for an API route                        | Optional     |
+| `group_list`     | List configured repository groups                                | —            |
+| `group_sync`     | Extract contracts and match across repositories                  | —            |
+
 <!-- gitnexus:mcp-tools:end -->
 
 > With one indexed repo, the `repo` param is optional. With multiple, specify which: `query({query: "auth", repo: "my-app"})`.
 
 ## MCP Resources
 
-| Resource | Purpose |
-|----------|---------|
-| `gitnexus://repos` | List all indexed repositories (read first) |
-| `gitnexus://repo/{name}/context` | Codebase stats, staleness check, and available tools |
-| `gitnexus://repo/{name}/clusters` | All functional clusters with cohesion scores |
-| `gitnexus://repo/{name}/cluster/{name}` | Cluster members and details |
-| `gitnexus://repo/{name}/processes` | All execution flows |
-| `gitnexus://repo/{name}/process/{name}` | Full process trace with steps |
-| `gitnexus://repo/{name}/schema` | Graph schema for Cypher queries |
+| Resource                                | Purpose                                              |
+| --------------------------------------- | ---------------------------------------------------- |
+| `gitnexus://repos`                      | List all indexed repositories (read first)           |
+| `gitnexus://repo/{name}/context`        | Codebase stats, staleness check, and available tools |
+| `gitnexus://repo/{name}/clusters`       | All functional clusters with cohesion scores         |
+| `gitnexus://repo/{name}/cluster/{name}` | Cluster members and details                          |
+| `gitnexus://repo/{name}/processes`      | All execution flows                                  |
+| `gitnexus://repo/{name}/process/{name}` | Full process trace with steps                        |
+| `gitnexus://repo/{name}/schema`         | Graph schema for Cypher queries                      |
 
 ## MCP Prompts
 
-| Prompt | What It Does |
-|--------|-------------|
-| `detect_impact` | Pre-commit change analysis — scope, affected processes, risk level |
-| `generate_map` | Architecture documentation from the knowledge graph with mermaid diagrams |
+| Prompt          | What It Does                                                              |
+| --------------- | ------------------------------------------------------------------------- |
+| `detect_impact` | Pre-commit change analysis — scope, affected processes, risk level        |
+| `generate_map`  | Architecture documentation from the knowledge graph with mermaid diagrams |
 
 ## CLI Commands
 
 ```bash
 gitnexus setup                   # Configure MCP for your editors (one-time)
-gitnexus analyze [path]          # Index a repository (or update stale index)
+gitnexus analyze [path]          # Generate managed assets/embeddings or explicitly rebuild
 gitnexus analyze --force         # Force full re-index
+gitnexus analyze --index-only    # Graph/registry only; does not rewrite AGENTS.md or skills
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
 gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md GitNexus section edits
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
@@ -164,6 +184,10 @@ gitnexus analyze --max-file-size 1024  # Skip files larger than N KB (default: 5
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
 gitnexus setup --codex-scope project  # Write project-local Codex MCP config and skills
 gitnexus doctor codex            # Verify Codex CLI, plugin, skills, MCP config, and protocol
+gitnexus refresh init --path /abs/worktree  # Initialize one worktree
+gitnexus refresh status --path /abs/worktree                    # Show its freshness state
+gitnexus refresh request --path /abs/worktree                   # Queue a deduplicated background ensure
+gitnexus refresh ensure --path /abs/worktree                    # Serialized index-only refresh
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI
 gitnexus index                   # Register an existing .gitnexus/ folder into the global registry
@@ -213,21 +237,21 @@ TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, 
 
 ### Language Feature Matrix
 
-| Language | Imports | Named Bindings | Exports | Heritage | Type Annotations | Constructor Inference | Config | Frameworks | Entry Points |
-|----------|---------|----------------|---------|----------|-----------------|---------------------|--------|------------|-------------|
-| TypeScript | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| JavaScript | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ |
-| Python | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Java | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
-| Kotlin | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
-| C# | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Go | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Rust | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
-| PHP | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Ruby | ✓ | — | ✓ | ✓ | — | ✓ | — | ✓ | ✓ |
-| Swift | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| C | — | — | ✓ | — | ✓ | ✓ | — | ✓ | ✓ |
-| C++ | — | — | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
+| Language   | Imports | Named Bindings | Exports | Heritage | Type Annotations | Constructor Inference | Config | Frameworks | Entry Points |
+| ---------- | ------- | -------------- | ------- | -------- | ---------------- | --------------------- | ------ | ---------- | ------------ |
+| TypeScript | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| JavaScript | ✓       | ✓              | ✓       | ✓        | —                | ✓                     | ✓      | ✓          | ✓            |
+| Python     | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| Java       | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| Kotlin     | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| C#         | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| Go         | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| Rust       | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| PHP        | ✓       | ✓              | ✓       | —        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| Ruby       | ✓       | —              | ✓       | ✓        | —                | ✓                     | —      | ✓          | ✓            |
+| Swift      | —       | —              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| C          | —       | —              | ✓       | —        | ✓                | ✓                     | —      | ✓          | ✓            |
+| C++        | —       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
 
@@ -316,10 +340,10 @@ GitNexus uses optional DuckDB extensions for BM25 and vector search. The `gitnex
 
 Configure the behavior with two environment variables:
 
-| Variable | Values | Default | Effect |
-|----------|--------|---------|--------|
-| `GITNEXUS_LBUG_EXTENSION_INSTALL` | `auto`, `load-only`, `never` | `auto` | `auto` runs one bounded INSTALL if LOAD fails. `load-only` only uses already-installed extensions (recommended for offline / firewalled environments). `never` skips optional extensions entirely. |
-| `GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS` | positive integer | `15000` | Wall-clock budget for the out-of-process `INSTALL` child before it is killed. |
+| Variable                                     | Values                       | Default | Effect                                                                                                                                                                                             |
+| -------------------------------------------- | ---------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GITNEXUS_LBUG_EXTENSION_INSTALL`            | `auto`, `load-only`, `never` | `auto`  | `auto` runs one bounded INSTALL if LOAD fails. `load-only` only uses already-installed extensions (recommended for offline / firewalled environments). `never` skips optional extensions entirely. |
+| `GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS` | positive integer             | `15000` | Wall-clock budget for the out-of-process `INSTALL` child before it is killed.                                                                                                                      |
 
 ```bash
 # Offline/airgapped: never reach the network for extensions

@@ -13,7 +13,13 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
 import { createRequire } from 'node:module';
-import { loadMeta, listRegisteredRepos, getStoragePath } from '../storage/repo-manager.js';
+import {
+  loadMeta,
+  listRegisteredRepos,
+  getStoragePath,
+  unregisterRepo,
+  withAnalysisLock,
+} from '../storage/repo-manager.js';
 import {
   executeQuery,
   executePrepared,
@@ -768,7 +774,8 @@ export const createServer = async (
         return;
       }
 
-      // Acquire repo lock — prevents deleting while analyze/embed is in flight
+      // The in-process lock protects server jobs; the shared worktree lock
+      // below also coordinates this destructive path with CLI/MCP workers.
       const lockKey = getStoragePath(entry.path);
       const lockErr = acquireRepoLock(lockKey);
       if (lockErr) {
@@ -782,9 +789,13 @@ export const createServer = async (
           await closeLbug();
         } catch {}
 
-        // 1. Delete the .gitnexus index/storage directory
+        // 1. Delete the .gitnexus index/storage directory under the same
+        // cross-process worktree lock used by analysis/refresh.
         const storagePath = getStoragePath(entry.path);
-        await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
+        await withAnalysisLock(entry.path, async () => {
+          await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
+          await unregisterRepo(entry.path);
+        });
 
         // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/
         const cloneDir = getCloneDir(entry.name);
@@ -797,11 +808,7 @@ export const createServer = async (
           /* clone dir may not exist (local repos) */
         }
 
-        // 3. Unregister from the global registry
-        const { unregisterRepo } = await import('../storage/repo-manager.js');
-        await unregisterRepo(entry.path);
-
-        // 4. Reinitialize backend to reflect the removal
+        // 3. Reinitialize backend to reflect the removal
         await backend.init().catch(() => {});
 
         res.json({ deleted: entry.name });

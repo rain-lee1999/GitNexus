@@ -51,6 +51,7 @@ describe('checkStaleness', () => {
     expect(result.isStale).toBe(true);
     expect(result.commitsBehind).toBeGreaterThan(0);
     expect(result.hint).toContain('behind HEAD');
+    expect(result.hint).toContain('gitnexus refresh ensure --path');
   });
 
   it('fails open when git command fails (e.g., invalid path)', () => {

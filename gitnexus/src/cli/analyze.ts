@@ -103,6 +103,11 @@ export interface AnalyzeOptions {
    */
   dropEmbeddings?: boolean;
   skills?: boolean;
+  /**
+   * Refresh graph storage only. Intended for automatic refreshers, so it
+   * never creates or updates AGENTS.md or `.agents/skills`.
+   */
+  indexOnly?: boolean;
   verbose?: boolean;
   /** Skip the GitNexus-managed AGENTS.md block update. */
   skipAgentsMd?: boolean;
@@ -146,6 +151,12 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   // async error that escapes the try/catch below (#1169) surfaces with
   // a stack trace and a non-zero exit code instead of a silent exit 0.
   installFatalHandlers();
+
+  if (options?.indexOnly && options?.skills) {
+    console.error('  --index-only cannot be combined with --skills.\n');
+    process.exitCode = 1;
+    return;
+  }
 
   if (options?.verbose) {
     process.env.GITNEXUS_VERBOSE = '1';
@@ -343,6 +354,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         skipGit: options?.skipGit,
         skipAgentsMd: options?.skipAgentsMd,
         noStats: options?.noStats,
+        indexOnly: options?.indexOnly,
         registryName: options?.name,
         // Registry-collision bypass — its own CLI flag, intentionally NOT
         // overloading --force. A user who hits the collision guard should
@@ -386,7 +398,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     await assertAnalysisFinalized(repoPath);
 
     // Skill generation (CLI-only, uses pipeline result from analysis)
-    if (options?.skills && result.pipelineResult) {
+    if (options?.skills && !options?.indexOnly && result.pipelineResult) {
       updateBar(99, 'Generating skill files...');
       try {
         const { generateSkillFiles } = await import('./skill-gen.js');

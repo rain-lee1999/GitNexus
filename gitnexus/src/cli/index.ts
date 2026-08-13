@@ -41,6 +41,10 @@ program
       'preserves any embeddings already present in the index.',
   )
   .option('--skills', 'Generate repo-specific skill files from detected communities')
+  .option(
+    '--index-only',
+    'Refresh only the graph index, metadata, and registry; never write AGENTS.md or .agents/skills',
+  )
   .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md')
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md')
   .option(
@@ -83,6 +87,22 @@ program
       '     `!__tests__/` to index a directory that is auto-filtered by default (#771).',
   )
   .action(createLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
+
+program
+  .command('refresh <action>')
+  .description('Coordinate worktree-safe index-only graph refreshes')
+  .requiredOption(
+    '--path <absolute-worktree>',
+    'Absolute Git worktree root (never inferred from cwd)',
+  )
+  .option('--alias <alias>', 'Stable unique registry alias for this worktree')
+  .option('--reason <reason>', 'Stale-marker reason (used by Git/Codex hooks)')
+  .option('-f, --force', 'Force an index-only rebuild even when HEAD has not changed')
+  .option('--install-git-hooks', 'Install GitNexus-managed post-Git stale markers when safe')
+  .option('--with-serena', 'Initialize/prewarm Serena for this worktree under a global Serena lock')
+  .option('--serena-bin <path>', 'Absolute Serena executable path for --with-serena')
+  .option('--json', 'Emit machine-readable status JSON')
+  .action(createLazyAction(() => import('./refresh.js'), 'refreshCommand'));
 
 program
   .command('index [path...]')
