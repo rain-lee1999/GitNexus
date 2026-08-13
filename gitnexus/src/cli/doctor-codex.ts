@@ -96,6 +96,18 @@ function entryFromRegistration(registration: CodexMcpRegistration): McpEntry | n
   return { command: transport.command, args: transport.args ?? [] };
 }
 
+function sameMcpEntry(left: McpEntry, right: McpEntry): boolean {
+  return (
+    left.command === right.command &&
+    left.args.length === right.args.length &&
+    left.args.every((arg, index) => arg === right.args[index])
+  );
+}
+
+function isDirectLocalMcpEntry(entry: McpEntry): boolean {
+  return entry.args.length === 1 && entry.args[0] === 'mcp' && path.isAbsolute(entry.command);
+}
+
 async function checkMcpProtocol(
   entry: McpEntry,
 ): Promise<{ serverVersion: string; toolCount: number }> {
@@ -139,6 +151,7 @@ export async function runCodexDoctor(options: CodexDoctorOptions = {}): Promise<
   let codexBin = '';
   let registration: CodexMcpRegistration | null = null;
   let expectedPluginEntry: McpEntry | null = null;
+  let directLocalOverride: McpEntry | null = null;
 
   try {
     const { stdout } = await execFileAsync('codex', ['--version'], commandOptions());
@@ -243,20 +256,18 @@ export async function runCodexDoctor(options: CodexDoctorOptions = {}): Promise<
         throw new Error('GitNexus MCP registration is disabled or not stdio');
       }
       const expected = expectedPluginEntry;
-      if (
-        expected &&
-        (entry.command !== expected.command ||
-          entry.args.length !== expected.args.length ||
-          entry.args.some((arg, index) => arg !== expected.args[index]))
-      ) {
-        throw new Error(
-          `GitNexus plugin MCP is shadowed or stale (expected ${expected.command} ${expected.args.join(' ')})`,
-        );
+      if (expected && !sameMcpEntry(entry, expected)) {
+        if (!isDirectLocalMcpEntry(entry)) {
+          throw new Error(
+            `GitNexus plugin MCP is shadowed or stale (expected ${expected.command} ${expected.args.join(' ')})`,
+          );
+        }
+        directLocalOverride = entry;
       }
       checks.push({
         name: 'Codex MCP registration',
         status: 'pass',
-        detail: `${entry.command} ${entry.args.join(' ')}`,
+        detail: `${entry.command} ${entry.args.join(' ')}${directLocalOverride ? ' (direct local override)' : ''}`,
       });
     } catch (error: any) {
       checks.push({
@@ -277,17 +288,23 @@ export async function runCodexDoctor(options: CodexDoctorOptions = {}): Promise<
 
   if (options.runProtocol !== false) {
     try {
-      // Exercise this installed package entry, not an npx fallback that could
-      // reach the network or a stale global binary.
-      const healthy = await checkMcpProtocol(await resolvePackagedMcpEntry());
+      // Exercise an intentional direct override so doctor verifies the command
+      // Codex will actually launch. Otherwise use this installed package entry,
+      // avoiding an npx fallback that could reach the network.
+      const entry = directLocalOverride ?? (await resolvePackagedMcpEntry());
+      const healthy = await checkMcpProtocol(entry);
       checks.push({
-        name: 'Packaged MCP initialize/tools/list',
+        name: directLocalOverride
+          ? 'Configured MCP initialize/tools/list'
+          : 'Packaged MCP initialize/tools/list',
         status: 'pass',
         detail: `${healthy.serverVersion}, ${healthy.toolCount} tools`,
       });
     } catch (error: any) {
       checks.push({
-        name: 'Packaged MCP initialize/tools/list',
+        name: directLocalOverride
+          ? 'Configured MCP initialize/tools/list'
+          : 'Packaged MCP initialize/tools/list',
         status: 'fail',
         detail: error.message,
         fix: 'Run `gitnexus setup`, then retry `gitnexus doctor codex`.',

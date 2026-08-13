@@ -2045,7 +2045,28 @@ export class LocalBackend {
         break;
       case 'compare':
         if (!params.base_ref) return { error: 'base_ref is required for "compare" scope' };
-        diffArgs = ['diff', params.base_ref, '-U0'];
+        try {
+          // Resolve the user-controlled revision before passing it to `git diff`.
+          // `--end-of-options` prevents values such as `--output=/path` from
+          // being interpreted as git options, and the resulting object ID is
+          // safe to use as a positional diff argument.
+          const commit = execFileSync(
+            'git',
+            ['rev-parse', '--verify', '--end-of-options', `${params.base_ref}^{commit}`],
+            {
+              cwd: repo.repoPath,
+              encoding: 'utf-8',
+              maxBuffer: 1024 * 1024,
+              stdio: ['ignore', 'pipe', 'ignore'],
+            },
+          ).trim();
+          if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(commit)) {
+            return { error: 'Invalid base_ref: expected an existing commit-ish.' };
+          }
+          diffArgs = ['diff', commit, '-U0'];
+        } catch {
+          return { error: 'Invalid base_ref: expected an existing commit-ish.' };
+        }
         break;
       case 'unstaged':
       default:

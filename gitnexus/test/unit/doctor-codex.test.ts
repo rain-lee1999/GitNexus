@@ -158,6 +158,44 @@ describe('doctor codex', () => {
     expect(registration?.fix).toContain('gitnexus setup');
   });
 
+  it('accepts an intentional direct local MCP override when the plugin is installed', async () => {
+    execFileMock.mockImplementation((...args: any[]) => {
+      const cliArgs = args[1] as string[];
+      const callback = args.at(-1);
+      if (cliArgs[0] === '--version') return callback(null, 'codex-cli 0.144.6\n', '');
+      if (cliArgs.join(' ') === 'plugin list --json') {
+        return callback(
+          null,
+          JSON.stringify({
+            installed: [{ pluginId: 'gitnexus@gitnexus', installed: true, enabled: true }],
+          }),
+          '',
+        );
+      }
+      if (cliArgs.join(' ') === 'mcp get gitnexus --json') {
+        return callback(
+          null,
+          JSON.stringify({
+            ...pluginRegistration,
+            transport: { type: 'stdio', command: '/opt/homebrew/bin/gitnexus', args: ['mcp'] },
+          }),
+          '',
+        );
+      }
+      return callback(new Error(`unexpected command: ${cliArgs.join(' ')}`), '', '');
+    });
+
+    const { runCodexDoctor } = await import('../../src/cli/doctor-codex.js');
+    const report = await runCodexDoctor({ runProtocol: false });
+    const registration = report.checks.find((check) => check.name === 'Codex MCP registration');
+
+    expect(report.ok).toBe(true);
+    expect(registration).toMatchObject({
+      status: 'pass',
+      detail: '/opt/homebrew/bin/gitnexus mcp (direct local override)',
+    });
+  });
+
   it('keeps a direct MCP fallback healthy when the plugin CLI is unavailable', async () => {
     execFileMock.mockImplementation((...args: any[]) => {
       const cliArgs = args[1] as string[];
