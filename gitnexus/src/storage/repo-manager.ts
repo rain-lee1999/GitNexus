@@ -226,6 +226,16 @@ interface LockOwner {
   hostname?: string;
 }
 
+/**
+ * Filesystem identity is captured before stale-lock recovery. A lock owner
+ * can be replaced between our stale check and `rename`; path names alone
+ * cannot distinguish that fresh replacement from the lock we observed.
+ */
+interface LockIdentity {
+  dev: number;
+  ino: number;
+}
+
 interface ResolvedLockOptions {
   waitTimeoutMs: number;
   staleAfterMs: number;
@@ -253,6 +263,22 @@ const resolveLockOptions = (options?: LockOptions): ResolvedLockOptions => ({
 });
 
 const getLockOwnerPath = (lockPath: string): string => path.join(lockPath, LOCK_OWNER_FILE);
+
+const readLockIdentity = async (lockPath: string): Promise<LockIdentity | undefined> => {
+  try {
+    const stat = await fs.lstat(lockPath);
+    return { dev: stat.dev, ino: stat.ino };
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') return undefined;
+    throw err;
+  }
+};
+
+const sameLockIdentity = (
+  left: LockIdentity | undefined,
+  right: LockIdentity | undefined,
+): boolean =>
+  left !== undefined && right !== undefined && left.dev === right.dev && left.ino === right.ino;
 
 const readLockOwner = async (lockPath: string): Promise<LockOwner | undefined> => {
   try {
@@ -317,6 +343,8 @@ const hasConfirmedDeadLocalOwner = (owner: LockOwner | undefined): boolean => {
  * optional same-host crash-recovery optimization, not the primary lease.
  */
 const recoverStaleLock = async (lockPath: string, staleAfterMs: number): Promise<boolean> => {
+  const observedIdentity = await readLockIdentity(lockPath);
+  if (!observedIdentity) return false;
   const observedOwner = await readLockOwner(lockPath);
   if (!hasConfirmedDeadLocalOwner(observedOwner) && !(await isStaleLock(lockPath, staleAfterMs))) {
     return false;
@@ -332,16 +360,13 @@ const recoverStaleLock = async (lockPath: string, staleAfterMs: number): Promise
     throw err;
   }
 
-  // If a new owner appeared between the stale check and the atomic rename,
-  // restore its lock rather than treating it as abandoned. This cannot make a
-  // stale lock live again in the normal case because the opaque token remains
-  // stable for the lifetime of one acquisition.
-  const quarantinedOwner = await readLockOwner(quarantinePath);
-  if (
-    observedOwner?.token !== undefined &&
-    quarantinedOwner?.token !== undefined &&
-    observedOwner.token !== quarantinedOwner.token
-  ) {
+  // If a new owner appeared between our stale observation and the atomic
+  // rename, restore that exact filesystem object. Owner metadata is not
+  // sufficient here: a process may have crashed after creating the lock
+  // directory but before writing owner.json, which would otherwise let an
+  // older recoverer delete a newer lock.
+  const quarantinedIdentity = await readLockIdentity(quarantinePath);
+  if (!sameLockIdentity(observedIdentity, quarantinedIdentity)) {
     try {
       await fs.rename(quarantinePath, lockPath);
     } catch {

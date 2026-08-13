@@ -262,6 +262,48 @@ describe('GitNexus writer locks', () => {
     await recovered.release();
   });
 
+  it('never deletes a fresh replacement while recovering an ownerless stale lock', async () => {
+    const lockPath = getAnalysisLockPath(tmpRepo.dbPath);
+    await fs.mkdir(lockPath, { recursive: true });
+    const old = new Date(Date.now() - 60_000);
+    await fs.utimes(lockPath, old, old);
+
+    const originalRename = fs.rename.bind(fs);
+    let injectedReplacement = false;
+    vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      if (!injectedReplacement && String(from) === lockPath) {
+        injectedReplacement = true;
+        await originalRename(lockPath, `${lockPath}.stalled-owner`);
+        await fs.mkdir(lockPath);
+        await fs.writeFile(
+          path.join(lockPath, 'owner.json'),
+          JSON.stringify({
+            token: 'fresh-replacement',
+            acquiredAt: new Date().toISOString(),
+            pid: process.pid,
+            hostname: os.hostname(),
+          }),
+          'utf-8',
+        );
+      }
+      await originalRename(from, to);
+    });
+
+    await expect(
+      acquireFileLock(lockPath, {
+        waitTimeoutMs: 30,
+        staleAfterMs: 10_000,
+        retryDelayMs: 2,
+      }),
+    ).rejects.toBeInstanceOf(GitNexusLockTimeoutError);
+
+    expect(injectedReplacement).toBe(true);
+    const owner = JSON.parse(await fs.readFile(path.join(lockPath, 'owner.json'), 'utf-8')) as {
+      token: string;
+    };
+    expect(owner.token).toBe('fresh-replacement');
+  });
+
   it('immediately recovers a fresh same-host lock whose owner PID is confirmed dead', async () => {
     const lockPath = getAnalysisLockPath(tmpRepo.dbPath);
     await fs.mkdir(lockPath, { recursive: true });
