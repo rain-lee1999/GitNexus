@@ -12,6 +12,8 @@ vi.mock('../../src/core/run-analyze.js', () => ({
 
 const originalHome = process.env.GITNEXUS_HOME;
 const originalCli = process.env.GITNEXUS_CLI;
+const originalSerenaHome = process.env.SERENA_HOME;
+const originalSerenaArgsFile = process.env.GITNEXUS_SERENA_ARGS_FILE;
 const handles: Array<{ cleanup: () => Promise<void> }> = [];
 
 const createRepo = async () => {
@@ -37,6 +39,10 @@ afterEach(async () => {
   else process.env.GITNEXUS_HOME = originalHome;
   if (originalCli === undefined) delete process.env.GITNEXUS_CLI;
   else process.env.GITNEXUS_CLI = originalCli;
+  if (originalSerenaHome === undefined) delete process.env.SERENA_HOME;
+  else process.env.SERENA_HOME = originalSerenaHome;
+  if (originalSerenaArgsFile === undefined) delete process.env.GITNEXUS_SERENA_ARGS_FILE;
+  else process.env.GITNEXUS_SERENA_ARGS_FILE = originalSerenaArgsFile;
   await Promise.all(handles.splice(0).map((handle) => handle.cleanup()));
 });
 
@@ -53,6 +59,20 @@ describe('worktree refresh coordinator', () => {
 
     expect(deriveWorktreeAlias('/tmp/one/app')).not.toBe(deriveWorktreeAlias('/tmp/two/app'));
     expect(deriveWorktreeAlias('/tmp/one/app')).toMatch(/^app-[a-f0-9]{12}$/);
+  });
+
+  it('recognizes a global CLI symlink as the compiled refresh entrypoint', async () => {
+    const { isCompiledRefreshEntrypoint } = await import('../../src/cli/refresh.js');
+
+    expect(
+      isCompiledRefreshEntrypoint(
+        '/usr/local/bin/gitnexus',
+        () => '/opt/lib/node_modules/gitnexus/dist/cli/index.js',
+      ),
+    ).toBe(true);
+    expect(
+      isCompiledRefreshEntrypoint('/usr/local/bin/gitnexus', () => '/opt/lib/other-cli.js'),
+    ).toBe(false);
   });
 
   it('persists state and stale markers independently from generated agent assets', async () => {
@@ -108,6 +128,7 @@ describe('worktree refresh coordinator', () => {
       expect.objectContaining({
         force: true,
         indexOnly: true,
+        skipWorkers: true,
         registryName: 'repo-worktree',
       }),
       expect.any(Object),
@@ -129,9 +150,69 @@ describe('worktree refresh coordinator', () => {
 
     expect(runFullAnalysisMock).toHaveBeenCalledWith(
       root,
-      expect.objectContaining({ force: true, indexOnly: true }),
+      expect.objectContaining({ force: true, indexOnly: true, skipWorkers: true }),
       expect.any(Object),
     );
+  });
+
+  it('requires explicit Serena languages only alongside --with-serena', async () => {
+    const repo = await createRepo();
+    const home = await createTempDir('gitnexus-refresh-serena-validation-home-');
+    handles.push(home);
+    process.env.GITNEXUS_HOME = home.dbPath;
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { refreshCommand } = await import('../../src/cli/refresh.js');
+    const root = await fs.realpath(repo.dbPath);
+
+    await refreshCommand('init', { path: root, withSerena: true });
+    expect(process.exitCode).toBe(1);
+    expect(error).toHaveBeenLastCalledWith(
+      'GitNexus refresh failed: `--with-serena` requires at least one `--serena-language <language>`.',
+    );
+
+    process.exitCode = undefined;
+    await refreshCommand('init', { path: root, serenaLanguages: ['typescript'] });
+    expect(process.exitCode).toBe(1);
+    expect(error).toHaveBeenLastCalledWith(
+      'GitNexus refresh failed: `--serena-language` requires `--with-serena`.',
+    );
+  });
+
+  it('prewarms Serena non-interactively with every explicit language', async () => {
+    const repo = await createRepo();
+    const home = await createTempDir('gitnexus-refresh-serena-home-');
+    const serenaHome = await createTempDir('gitnexus-refresh-serena-state-');
+    handles.push(home, serenaHome);
+    const fakeSerena = path.join(repo.dbPath, 'fake-serena');
+    const argsPath = path.join(repo.dbPath, 'serena-args.txt');
+    await fs.writeFile(
+      fakeSerena,
+      '#!/usr/bin/env sh\nprintf \'%s\\n\' "$@" > "$GITNEXUS_SERENA_ARGS_FILE"\n',
+      { mode: 0o755 },
+    );
+    await fs.chmod(fakeSerena, 0o755);
+    process.env.GITNEXUS_HOME = home.dbPath;
+    process.env.SERENA_HOME = serenaHome.dbPath;
+    process.env.GITNEXUS_SERENA_ARGS_FILE = argsPath;
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const { refreshCommand } = await import('../../src/cli/refresh.js');
+    const root = await fs.realpath(repo.dbPath);
+
+    await refreshCommand('init', {
+      path: root,
+      withSerena: true,
+      serenaBin: fakeSerena,
+      serenaLanguages: ['typescript', 'python'],
+    });
+
+    await expect(fs.readFile(argsPath, 'utf8')).resolves.toBe(
+      ['project', 'index', root, '--language', 'typescript', '--language', 'python', ''].join('\n'),
+    );
+    const state = JSON.parse(
+      await fs.readFile(path.join(root, '.gitnexus', 'refresh', 'state.json'), 'utf8'),
+    ) as { serenaInitializedAt?: string };
+    expect(state.serenaInitializedAt).toEqual(expect.any(String));
   });
 
   it('installs conventional Git hooks but never overwrites custom, modified, or Husky dispatchers', async () => {

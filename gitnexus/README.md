@@ -37,11 +37,20 @@ gitnexus refresh init --path /absolute/path/to/worktree
 # Optional: primary checkout only. Linked worktrees share Git hooks and are skipped safely.
 gitnexus refresh init --path /absolute/path/to/primary-checkout --install-git-hooks
 
+# Optional: prewarm Serena for this worktree without allowing interactive language selection.
+gitnexus refresh init --path /absolute/path/to/worktree \
+  --with-serena \
+  --serena-bin /absolute/path/to/serena \
+  --serena-language typescript \
+  --serena-language python
+
 # Safe to call from concurrent Codex sessions; one writer per worktree.
 gitnexus refresh ensure --path /absolute/path/to/worktree
 ```
 
-`refresh ensure` serializes writers and runs `analyze --index-only`, so it never rewrites `AGENTS.md` or `.agents/skills/`. The Codex graph gate queues this refresh on demand when a stale graph query is attempted, then denies that one call; retry when it completes, or use `ensure` above when the task must wait. For the freshness-gated graph tools (`query`, `cypher`, `context`, `impact`, `route_map`, `tool_map`, `shape_check`, and `api_impact`), pass `repo` explicitly as the absolute worktree path; the gate intentionally rejects aliases. `detect_changes` is intentionally not freshness-gated. If `core.hooksPath` is already managed by Husky, another dispatcher, or the checkout is linked, `init --install-git-hooks` safely reports a skip instead of changing project hook files.
+`refresh ensure` serializes writers and runs `analyze --index-only`, so it never rewrites `AGENTS.md` or `.agents/skills/`. Its automatic refresh path explicitly uses sequential Tree-sitter parsing rather than `worker_threads`; this favors reliable recovery from native parser failures, while direct `gitnexus analyze` keeps its parallel worker default. The Codex graph gate queues this refresh on demand when a stale graph query is attempted, then denies that one call; retry when it completes, or use `ensure` above when the task must wait. For the freshness-gated graph tools (`query`, `cypher`, `context`, `impact`, `route_map`, `tool_map`, `shape_check`, and `api_impact`), pass `repo` explicitly as the absolute worktree path; the gate intentionally rejects aliases. `detect_changes` is intentionally not freshness-gated. If `core.hooksPath` is already managed by Husky, another dispatcher, or the checkout is linked, `init --install-git-hooks` safely reports a skip instead of changing project hook files.
+
+When enabling Serena, `--with-serena` requires one or more repeatable `--serena-language <language>` values, and `--serena-language` is rejected without `--with-serena`. GitNexus serializes `serena project index <worktree> --language <language> ...` under one global Serena lock. Supplying the language IDs explicitly keeps worktree initialization non-interactive; `--serena-bin` may instead be supplied through `GITNEXUS_SERENA_BIN`.
 
 `gitnexus setup` auto-detects your editors and writes the correct global MCP config. You only need to run it once.
 
@@ -185,6 +194,7 @@ gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow pa
 gitnexus setup --codex-scope project  # Write project-local Codex MCP config and skills
 gitnexus doctor codex            # Verify Codex CLI, plugin, skills, MCP config, and protocol
 gitnexus refresh init --path /abs/worktree  # Initialize one worktree
+gitnexus refresh init --path /abs/worktree --with-serena --serena-bin /abs/serena --serena-language typescript  # Initialize Serena non-interactively (repeat --serena-language as needed)
 gitnexus refresh status --path /abs/worktree                    # Show its freshness state
 gitnexus refresh request --path /abs/worktree                   # Queue a deduplicated background ensure
 gitnexus refresh ensure --path /abs/worktree                    # Serialized index-only refresh

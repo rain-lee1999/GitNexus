@@ -10,7 +10,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -50,6 +50,10 @@ export interface RefreshOptions {
   force?: boolean;
   withSerena?: boolean;
   serenaBin?: string;
+  /** Commander maps repeated `--serena-language` flags to this singular key. */
+  serenaLanguage?: string[];
+  /** Programmatic callers may use the plural spelling. */
+  serenaLanguages?: string[];
 }
 
 export interface RefreshState {
@@ -109,9 +113,26 @@ const print = (value: unknown, options?: RefreshOptions): void => {
  * the CLI's large-heap guarantee. Unit callers and embedded consumers do not
  * get re-execed: only the actual compiled CLI entrypoint is eligible.
  */
+export const isCompiledRefreshEntrypoint = (
+  entrypoint = process.argv[1],
+  resolveRealpath: (candidate: string) => string = realpathSync.native,
+): boolean => {
+  if (!entrypoint) return false;
+  // Global npm installs commonly expose `gitnexus` as a symlink to the
+  // compiled index.js. Check its real path so routine PATH invocation gets
+  // the same heap guarantee as `node dist/cli/index.js`; unit runners remain
+  // excluded because their real entrypoint is not this CLI module.
+  let resolvedEntrypoint = entrypoint;
+  try {
+    resolvedEntrypoint = resolveRealpath(entrypoint);
+  } catch {
+    // A deleted/non-filesystem argv entry is not a deployable CLI target.
+  }
+  return path.basename(resolvedEntrypoint) === 'index.js';
+};
+
 const ensureAnalysisHeap = (): boolean => {
-  const entrypoint = process.argv[1];
-  if (!entrypoint || path.basename(entrypoint) !== 'index.js') return false;
+  if (!isCompiledRefreshEntrypoint()) return false;
   const limit = v8.getHeapStatistics().heap_size_limit;
   if (limit >= ANALYSIS_HEAP_MB * 1024 * 1024 * 0.9) return false;
   try {
@@ -486,6 +507,12 @@ const runSerenaInitialization = async (
   worktreePath: string,
   options: RefreshOptions,
 ): Promise<void> => {
+  const serenaLanguages = (options.serenaLanguage ?? options.serenaLanguages ?? []).map(
+    (language) => language.trim(),
+  );
+  if (serenaLanguages.length === 0 || serenaLanguages.some((language) => language.length === 0)) {
+    throw new Error('`--with-serena` requires at least one `--serena-language <language>`.');
+  }
   const serenaBin = options.serenaBin ?? process.env.GITNEXUS_SERENA_BIN;
   if (!serenaBin || !path.isAbsolute(serenaBin)) {
     throw new Error(
@@ -511,10 +538,19 @@ const runSerenaInitialization = async (
   }
   await withFileLock(path.join(serenaHome, SERENA_LOCK_FILE), async () => {
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(serenaBin, ['project', 'index', worktreePath], {
-        cwd: worktreePath,
-        stdio: ['ignore', 'inherit', 'inherit'],
-      });
+      const child = spawn(
+        serenaBin,
+        [
+          'project',
+          'index',
+          worktreePath,
+          ...serenaLanguages.flatMap((language) => ['--language', language]),
+        ],
+        {
+          cwd: worktreePath,
+          stdio: ['ignore', 'inherit', 'inherit'],
+        },
+      );
       child.once('error', reject);
       child.once('exit', (code, signal) => {
         if (code === 0) resolve();
@@ -633,6 +669,12 @@ const initialize = async (
   worktreePath: string,
   options: RefreshOptions,
 ): Promise<RefreshStatus> => {
+  if (
+    !options.withSerena &&
+    (options.serenaLanguage?.length ?? options.serenaLanguages?.length ?? 0) > 0
+  ) {
+    throw new Error('`--serena-language` requires `--with-serena`.');
+  }
   let state: RefreshState;
   await withStateLock(worktreePath, async () => {
     state = await ensureState(worktreePath, options.alias);
@@ -715,6 +757,11 @@ const ensure = async (worktreePath: string, options: RefreshOptions): Promise<Re
         // force the pipeline whenever the coordinator observed a marker.
         force: Boolean(options.force || markerSnapshot.length > 0),
         indexOnly: true,
+        // A detached, demand-driven refresh must remain reliable even when a
+        // native tree-sitter worker is terminated for an idle-timeout retry.
+        // Keep this explicit at the coordinator boundary; direct `analyze`
+        // retains its worker-pool performance default.
+        skipWorkers: true,
         registryName: state.alias,
       },
       { onProgress: () => {} },

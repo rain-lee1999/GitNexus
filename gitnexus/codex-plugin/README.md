@@ -43,6 +43,20 @@ gitnexus refresh ensure --path "$(git rev-parse --show-toplevel)"
 
 `init` records an identity for that exact worktree. In a primary checkout using the conventional hooks directory, add `--install-git-hooks` to install non-overwriting wrappers for `post-commit`, `post-merge`, `post-rewrite`, and branch `post-checkout`. The wrappers use the bundled [Git hook template](hooks/gitnexus-git-hook.cjs) to write a stale marker only. Linked worktrees share the primary checkout's hook directory, so GitNexus deliberately skips automatic installation there. Existing Husky or other `core.hooksPath` dispatchers are also left untouched; add the template manually if needed.
 
+### Optional Serena prewarm
+
+Serena setup is worktree-specific and non-interactive. Pass every intended LSP language explicitly:
+
+```bash
+gitnexus refresh init --path "$(git rev-parse --show-toplevel)" \
+  --with-serena \
+  --serena-bin /absolute/path/to/serena \
+  --serena-language typescript \
+  --serena-language python
+```
+
+`--with-serena` requires at least one repeatable `--serena-language <language>` option, and `--serena-language` cannot be used alone. GitNexus runs `serena project index <worktree> --language <language> ...` under a single global Serena lock, so concurrent worktree initialization cannot race. You may provide the executable through `GITNEXUS_SERENA_BIN` instead of `--serena-bin`.
+
 For a normal refresh, run:
 
 ```bash
@@ -52,7 +66,7 @@ gitnexus refresh ensure --path "$(git rev-parse --show-toplevel)"
 
 Use `gitnexus refresh ensure --path <worktree> --force` only when a graph query must include uncommitted new or changed symbols. Ordinary WIP should use `detect_changes` instead.
 
-When several worktrees are active, each has its own `.gitnexus` graph and analysis lock. Always pass the absolute worktree path as `repo` for every gated graph query; that lets the gate check the right index without relying on an ambiguous registry alias. The gate never accepts an alias.
+When several worktrees are active, each has its own `.gitnexus` graph and analysis lock. Automatic `refresh ensure` uses sequential Tree-sitter parsing deliberately: it avoids `worker_threads` teardown hazards in native parser bindings, while a direct `gitnexus analyze` still uses its parallel worker default. Always pass the absolute worktree path as `repo` for every gated graph query; that lets the gate check the right index without relying on an ambiguous registry alias. The gate never accepts an alias.
 
 The stale marker and query gate are coordination controls, not an implicit filesystem watcher. The gate may queue a demand-driven coordinator refresh; the coordinator serializes writers, while Git hooks only mark history changes.
 

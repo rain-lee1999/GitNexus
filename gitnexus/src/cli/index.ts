@@ -101,6 +101,12 @@ program
   .option('--install-git-hooks', 'Install GitNexus-managed post-Git stale markers when safe')
   .option('--with-serena', 'Initialize/prewarm Serena for this worktree under a global Serena lock')
   .option('--serena-bin <path>', 'Absolute Serena executable path for --with-serena')
+  .option(
+    '--serena-language <language>',
+    'Serena LSP language id for --with-serena; repeat for multiple languages',
+    (language: string, previous: string[] = []) => [...previous, language],
+    [],
+  )
   .option('--json', 'Emit machine-readable status JSON')
   .action(createLazyAction(() => import('./refresh.js'), 'refreshCommand'));
 

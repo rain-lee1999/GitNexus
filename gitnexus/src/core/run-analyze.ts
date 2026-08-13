@@ -82,6 +82,14 @@ export interface AnalyzeOptions {
    */
   indexOnly?: boolean;
   /**
+   * Force the ingestion pipeline to parse sequentially instead of creating a
+   * `worker_threads` pool. This is an explicit caller-level safety control:
+   * automatic refreshers use it when native parser worker teardown is less
+   * reliable than a slower, in-process parse. Normal `analyze` keeps its
+   * worker-pool default.
+   */
+  skipWorkers?: boolean;
+  /**
    * User-provided alias for the registry `name` (#829). When set,
    * forwarded to `registerRepo` so the indexed repo is stored under
    * this alias instead of the path-derived basename.
@@ -160,6 +168,31 @@ export const PHASE_LABELS: Record<string, string> = {
 export const getContextProjectName = (repoPath: string, explicitName?: string): string =>
   explicitName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath);
 
+// LadybugDB's writable adapter owns module-level `db`, `conn`, and
+// `currentDbPath` state. The per-worktree filesystem lock below keeps
+// separate processes from rebuilding the same worktree concurrently, but it
+// cannot stop two different worktrees handled by this *same* Node process
+// from switching that singleton underneath each other. Keep the full
+// analysis lifecycle in one process-local FIFO session. This intentionally
+// has no filesystem component: other Node processes and their worktrees can
+// still run in parallel.
+let analysisSessionTail: Promise<void> = Promise.resolve();
+
+const withAnalysisSession = async <T>(operation: () => Promise<T>): Promise<T> => {
+  const previous = analysisSessionTail;
+  let release: (() => void) | undefined;
+  analysisSessionTail = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release?.();
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Main orchestrator
 // ---------------------------------------------------------------------------
@@ -182,9 +215,14 @@ export async function runFullAnalysis(
 ): Promise<AnalyzeResult> {
   // The whole pipeline is mutually exclusive per worktree. Registry mutation
   // is independently serialized inside registerRepo(), so different worktrees
-  // can parse/load their separate indexes concurrently and contend only for
+  // can parse in separate Node processes concurrently and contend only for
   // the short global registry read-modify-write transaction at finalization.
-  return withAnalysisLock(repoPath, () => runFullAnalysisUnlocked(repoPath, options, callbacks));
+  // In a single process, however, the LadybugDB adapter has one mutable native
+  // session. Nest the process-local session inside the worktree lock so its
+  // init/load/close lifecycle cannot overlap another worktree's lifecycle.
+  return withAnalysisLock(repoPath, () =>
+    withAnalysisSession(() => runFullAnalysisUnlocked(repoPath, options, callbacks)),
+  );
 }
 
 async function runFullAnalysisUnlocked(
@@ -305,12 +343,18 @@ async function runFullAnalysisUnlocked(
   }
 
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
-  const pipelineResult = await runPipelineFromRepo(repoPath, (p) => {
-    const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
-    const scaled = Math.round(p.percent * 0.6);
-    const message = p.detail ? `${p.message || phaseLabel} (${p.detail})` : p.message || phaseLabel;
-    progress(p.phase, scaled, message);
-  });
+  const pipelineResult = await runPipelineFromRepo(
+    repoPath,
+    (p) => {
+      const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
+      const scaled = Math.round(p.percent * 0.6);
+      const message = p.detail
+        ? `${p.message || phaseLabel} (${p.detail})`
+        : p.message || phaseLabel;
+      progress(p.phase, scaled, message);
+    },
+    options.skipWorkers ? { skipWorkers: true } : undefined,
+  );
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
   progress('lbug', 60, 'Loading into LadybugDB...');
