@@ -6,6 +6,8 @@ import { statusCommand } from '../../src/cli/status.js';
 import { getStoragePaths, saveMeta, type RepoMeta } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
 
+const GITNEXUS_CONTEXT_VERSION_MARKER = '<!-- gitnexus:context-version:1 -->';
+
 describe('statusCommand enrichment reporting', () => {
   let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
   let originalCwd: string;
@@ -75,7 +77,7 @@ describe('statusCommand enrichment reporting', () => {
     );
     await fs.writeFile(
       path.join(tmpRepo.dbPath, 'AGENTS.md'),
-      `<!-- gitnexus:start -->\n<!-- gitnexus:index-commit:${currentCommit} -->\nctx\n<!-- gitnexus:end -->\n`,
+      `<!-- gitnexus:start -->\n${GITNEXUS_CONTEXT_VERSION_MARKER}\nctx\n<!-- gitnexus:end -->\n`,
       'utf-8',
     );
 
@@ -140,7 +142,7 @@ describe('statusCommand enrichment reporting', () => {
     await writeManagedSkills(currentCommit);
     await fs.writeFile(
       path.join(tmpRepo.dbPath, 'AGENTS.md'),
-      `<!-- gitnexus:start -->\n<!-- gitnexus:index-commit:${currentCommit} -->\nctx\n<!-- gitnexus:end -->\n`,
+      `<!-- gitnexus:start -->\n${GITNEXUS_CONTEXT_VERSION_MARKER}\nctx\n<!-- gitnexus:end -->\n`,
       'utf-8',
     );
     await writeHealthyMeta({
@@ -157,6 +159,32 @@ describe('statusCommand enrichment reporting', () => {
     expect(output).not.toContain('Recommendation: run gitnexus analyze --force --skills');
   });
 
+  it('reports legacy commit-based AGENTS.md context as stale for one-time migration', async () => {
+    const currentCommit = execSync('git rev-parse HEAD', {
+      cwd: tmpRepo.dbPath,
+      encoding: 'utf-8',
+    }).trim();
+
+    await writeManagedSkills(currentCommit);
+    await fs.writeFile(
+      path.join(tmpRepo.dbPath, 'AGENTS.md'),
+      `<!-- gitnexus:start -->\n<!-- gitnexus:index-commit:${currentCommit} -->\nctx\n<!-- gitnexus:end -->\n`,
+      'utf-8',
+    );
+    await writeHealthyMeta({
+      repoPath: tmpRepo.dbPath,
+      lastCommit: currentCommit,
+      indexedAt: '2026-05-04T00:00:00.000Z',
+      stats: { embeddings: 9 },
+    });
+
+    await statusCommand();
+
+    const output = logs.join('\n');
+    expect(output).toContain('Agent helpers: AGENTS.md stale, managed skills current');
+    expect(output).toContain('Recommendation: run gitnexus analyze --force --skills');
+  });
+
   it('reports generated skills stale independently from current managed skills', async () => {
     const currentCommit = execSync('git rev-parse HEAD', {
       cwd: tmpRepo.dbPath,
@@ -171,7 +199,7 @@ describe('statusCommand enrichment reporting', () => {
     await fs.writeFile(path.join(skillsDir, '.gitnexus-generated-commit'), 'old-commit\n', 'utf-8');
     await fs.writeFile(
       path.join(tmpRepo.dbPath, 'AGENTS.md'),
-      `<!-- gitnexus:start -->\n<!-- gitnexus:index-commit:${currentCommit} -->\nctx\n<!-- gitnexus:end -->\n`,
+      `<!-- gitnexus:start -->\n${GITNEXUS_CONTEXT_VERSION_MARKER}\nctx\n<!-- gitnexus:end -->\n`,
       'utf-8',
     );
     await writeHealthyMeta({

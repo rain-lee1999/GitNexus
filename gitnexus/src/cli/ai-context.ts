@@ -30,7 +30,7 @@ export interface AIContextOptions {
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
 const GITNEXUS_END_MARKER = '<!-- gitnexus:end -->';
-const GITNEXUS_INDEX_COMMIT_PREFIX = '<!-- gitnexus:index-commit:';
+const GITNEXUS_CONTEXT_VERSION_MARKER = '<!-- gitnexus:context-version:1 -->';
 const MANAGED_SKILLS_COMMIT_FILE = '.gitnexus-managed-commit';
 
 export const GITNEXUS_REPO_SKILLS = [
@@ -141,7 +141,6 @@ async function findGroupsContainingRegistryName(registryName: string): Promise<s
 function generateGitNexusContent(
   projectName: string,
   stats: RepoStats,
-  indexedCommit?: string,
   generatedSkills?: GeneratedSkillInfo[],
   groupNames?: string[],
   noStats?: boolean,
@@ -167,7 +166,7 @@ function generateGitNexusContent(
 | Index, status, clean, wiki CLI commands | \`.agents/skills/gitnexus-cli/SKILL.md\` |${generatedRows ? '\n' + generatedRows : ''}`;
 
   return `${GITNEXUS_START_MARKER}
-${GITNEXUS_INDEX_COMMIT_PREFIX}${indexedCommit ?? 'unknown'} -->
+${GITNEXUS_CONTEXT_VERSION_MARKER}
 # GitNexus — Code Intelligence
 
 This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}. Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
@@ -238,7 +237,7 @@ async function upsertGitNexusSection(
   const exists = await fileExists(filePath);
 
   if (!exists) {
-    await fs.writeFile(filePath, content, 'utf-8');
+    await fs.writeFile(filePath, content.trim() + '\n', 'utf-8');
     return 'created';
   }
 
@@ -347,7 +346,6 @@ export async function generateAIContextFiles(
   const content = generateGitNexusContent(
     projectName,
     stats,
-    indexedCommit,
     generatedSkills,
     groupNames,
     options?.noStats,

@@ -61,10 +61,10 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 ---
 
 <!-- gitnexus:start -->
-<!-- gitnexus:index-commit:46f7468b4a3398868e19fd5e1a71418549fd18de -->
+<!-- gitnexus:context-version:1 -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **GitNexus** (23068 symbols, 30483 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **GitNexus** (23081 symbols, 30504 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -103,9 +103,9 @@ This project is indexed by GitNexus as **GitNexus** (23068 symbols, 30483 relati
 | Review a pull request or code changes | `.agents/skills/gitnexus-pr-review/SKILL.md` |
 | Tools, resources, schema reference | `.agents/skills/gitnexus-guide/SKILL.md` |
 | Index, status, clean, wiki CLI commands | `.agents/skills/gitnexus-cli/SKILL.md` |
-| Work in the Ingestion area (221 symbols) | `.agents/skills/gitnexus-generated-ingestion/SKILL.md` |
-| Work in the Cli area (144 symbols) | `.agents/skills/gitnexus-generated-cli/SKILL.md` |
-| Work in the Components area (112 symbols) | `.agents/skills/gitnexus-generated-components/SKILL.md` |
+| Work in the Ingestion area (222 symbols) | `.agents/skills/gitnexus-generated-ingestion/SKILL.md` |
+| Work in the Cli area (146 symbols) | `.agents/skills/gitnexus-generated-cli/SKILL.md` |
+| Work in the Components area (108 symbols) | `.agents/skills/gitnexus-generated-components/SKILL.md` |
 | Work in the Group area (96 symbols) | `.agents/skills/gitnexus-generated-group/SKILL.md` |
 | Work in the Hooks area (91 symbols) | `.agents/skills/gitnexus-generated-hooks/SKILL.md` |
 | Work in the Type-extractors area (90 symbols) | `.agents/skills/gitnexus-generated-type-extractors/SKILL.md` |
@@ -122,7 +122,7 @@ This project is indexed by GitNexus as **GitNexus** (23068 symbols, 30483 relati
 | Work in the Embeddings area (50 symbols) | `.agents/skills/gitnexus-generated-embeddings/SKILL.md` |
 | Work in the Storage area (48 symbols) | `.agents/skills/gitnexus-generated-storage/SKILL.md` |
 | Work in the Llm area (44 symbols) | `.agents/skills/gitnexus-generated-llm/SKILL.md` |
-| Work in the Services area (39 symbols) | `.agents/skills/gitnexus-generated-services/SKILL.md` |
+| Work in the Services area (43 symbols) | `.agents/skills/gitnexus-generated-services/SKILL.md` |
 
 <!-- gitnexus:end -->
 

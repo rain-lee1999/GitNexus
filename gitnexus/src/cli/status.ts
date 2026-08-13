@@ -18,7 +18,7 @@ import { GITNEXUS_REPO_SKILLS } from './ai-context.js';
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
 const GITNEXUS_END_MARKER = '<!-- gitnexus:end -->';
-const GITNEXUS_INDEX_COMMIT_RE = /<!-- gitnexus:index-commit:([^\s]+) -->/;
+const GITNEXUS_CONTEXT_VERSION_MARKER = '<!-- gitnexus:context-version:1 -->';
 const MANAGED_SKILLS_COMMIT_FILE = '.gitnexus-managed-commit';
 const GENERATED_SKILLS_COMMIT_FILE = '.gitnexus-generated-commit';
 const GENERATED_SKILL_PREFIX = 'gitnexus-generated-';
@@ -26,17 +26,13 @@ const REQUIRED_REPO_SKILLS = GITNEXUS_REPO_SKILLS.map((skill) => skill.name);
 
 type AssetFreshness = 'missing' | 'stale' | 'current';
 
-const getGitNexusSectionFreshness = async (
-  filePath: string,
-  indexedCommit: string,
-): Promise<AssetFreshness> => {
+const getGitNexusSectionFreshness = async (filePath: string): Promise<AssetFreshness> => {
   try {
     const content = await fs.readFile(filePath, 'utf-8');
     if (!content.includes(GITNEXUS_START_MARKER) || !content.includes(GITNEXUS_END_MARKER)) {
       return 'missing';
     }
-    const markerCommit = content.match(GITNEXUS_INDEX_COMMIT_RE)?.[1];
-    return markerCommit === indexedCommit ? 'current' : 'stale';
+    return content.includes(GITNEXUS_CONTEXT_VERSION_MARKER) ? 'current' : 'stale';
   } catch {
     return 'missing';
   }
@@ -144,7 +140,7 @@ const formatAgentHelpers = async (
   repoPath: string,
   indexedCommit: string,
 ): Promise<{ line: string; needsRefresh: boolean }> => {
-  const agents = await getGitNexusSectionFreshness(path.join(repoPath, 'AGENTS.md'), indexedCommit);
+  const agents = await getGitNexusSectionFreshness(path.join(repoPath, 'AGENTS.md'));
   const managedSkills = await getManagedSkillsFreshness(repoPath, indexedCommit);
   const generatedSkills = await getGeneratedSkillsFreshness(repoPath, indexedCommit);
 

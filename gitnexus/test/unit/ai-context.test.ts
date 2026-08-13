@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { execFileSync } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -47,9 +48,72 @@ describe('generateAIContextFiles', () => {
     const content = await fs.readFile(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
     expect(content).toContain('gitnexus:start');
     expect(content).toContain('gitnexus:end');
-    expect(content).toContain(`<!-- gitnexus:index-commit:${indexedCommit} -->`);
+    expect(content).toContain('<!-- gitnexus:context-version:1 -->');
+    expect(content).not.toContain('gitnexus:index-commit:');
     expect(content).toContain('TestProject');
     await expect(fs.access(path.join(tmpDir, 'CLAUDE.md'))).rejects.toThrow();
+  });
+
+  it('keeps tracked AGENTS.md stable after committing it and refreshing the index', async () => {
+    const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ai-ctx-git-test-'));
+    const repoStoragePath = path.join(repoPath, '.gitnexus');
+
+    try {
+      execFileSync('git', ['init'], { cwd: repoPath, stdio: 'pipe' });
+      execFileSync('git', ['config', 'user.name', 'GitNexus Test'], { cwd: repoPath });
+      execFileSync('git', ['config', 'user.email', 'gitnexus@test.invalid'], { cwd: repoPath });
+      await fs.writeFile(path.join(repoPath, 'README.md'), '# Test\n', 'utf-8');
+      execFileSync('git', ['add', 'README.md'], { cwd: repoPath });
+      execFileSync('git', ['commit', '-m', 'initial'], { cwd: repoPath, stdio: 'pipe' });
+
+      const initialCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: repoPath,
+        encoding: 'utf-8',
+      }).trim();
+      await fs.mkdir(repoStoragePath, { recursive: true });
+      await fs.writeFile(
+        path.join(repoStoragePath, 'meta.json'),
+        JSON.stringify({ lastCommit: initialCommit }),
+        'utf-8',
+      );
+      await generateAIContextFiles(repoPath, repoStoragePath, 'StableProject', {
+        nodes: 10,
+        edges: 20,
+        processes: 3,
+      });
+
+      execFileSync('git', ['add', '--force', 'AGENTS.md'], { cwd: repoPath });
+      execFileSync('git', ['commit', '-m', 'add generated context'], {
+        cwd: repoPath,
+        stdio: 'pipe',
+      });
+      const refreshedCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: repoPath,
+        encoding: 'utf-8',
+      }).trim();
+      await fs.writeFile(
+        path.join(repoStoragePath, 'meta.json'),
+        JSON.stringify({ lastCommit: refreshedCommit }),
+        'utf-8',
+      );
+
+      const before = await fs.readFile(path.join(repoPath, 'AGENTS.md'), 'utf-8');
+      await generateAIContextFiles(repoPath, repoStoragePath, 'StableProject', {
+        nodes: 10,
+        edges: 20,
+        processes: 3,
+      });
+      const after = await fs.readFile(path.join(repoPath, 'AGENTS.md'), 'utf-8');
+      const status = execFileSync('git', ['status', '--porcelain', '--', 'AGENTS.md'], {
+        cwd: repoPath,
+        encoding: 'utf-8',
+      });
+
+      expect(after).toBe(before);
+      expect(status).toBe('');
+    } finally {
+      await fs.rm(repoPath, { recursive: true, force: true });
+    }
   });
 
   it('keeps the load-bearing repo-specific sections in the AGENTS.md block (#856)', async () => {
