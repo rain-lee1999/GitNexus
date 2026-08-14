@@ -4,6 +4,8 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-08-14
+
 ### Added
 
 - **Codex-native integration** — a bundled local Codex marketplace/plugin now ships pinned stdio MCP configuration, a workflow skill, and trusted-on-review `PreToolUse` / `PostToolUse` hooks. MCP initialization also returns a self-contained GitNexus workflow.
@@ -14,6 +16,11 @@ All notable changes to GitNexus will be documented in this file.
 - **Safe-by-default repository assets** — plain `analyze` now updates graph/index/registry state without writing tracked agent assets. `agent-context plan/apply` is the reviewed path for `AGENTS.md` and native direct-child `.agents/skills/gitnexus-*`; legacy `analyze --skills` remains an explicit generated-skills compatibility path. Fixed skills use bundled-content freshness while generated skills retain index-commit freshness.
 - **Remote HTTP MCP is fail-closed** — non-loopback binds require a bearer token or an explicit insecure opt-in, expose read-only tools by default, and enforce request, rate, and session limits.
 - **MCP documentation is contract-tested** against the 13 tools exposed by the server.
+
+### Fixed
+
+- **Heap-restart JSON forwarding** — refresh supervision now preserves exactly one machine-parseable JSON document and the child exit status when a command re-executes with a larger heap.
+- **Fork-safe release automation** — forks retain PR CI and manual Docker dry-runs, but RC, npm, image push, signing, and attestation paths fail closed outside `abhigyanpatwari/GitNexus`.
 
 ## [1.6.3] - 2026-04-24
 

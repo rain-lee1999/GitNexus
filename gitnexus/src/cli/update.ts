@@ -141,7 +141,10 @@ function stashLocalChangesIfNeeded(repoRoot: string): string | null {
   const status = execGit(['status', '--porcelain'], repoRoot);
   if (!status) return null;
   const before = execGit(['rev-parse', '--short', 'HEAD'], repoRoot);
-  execGit(['stash', 'push', '--include-untracked', '-m', `gitnexus update auto-stash ${before}`], repoRoot);
+  execGit(
+    ['stash', 'push', '--include-untracked', '-m', `gitnexus update auto-stash ${before}`],
+    repoRoot,
+  );
   return before;
 }
 
@@ -188,7 +191,9 @@ export async function updateCommand(options: UpdateOptions = {}): Promise<void> 
   console.log('→ Fetching updates...');
   execGit(source.fetchArgs, repoRoot);
 
-  const commitCount = Number(execGit(['rev-list', `HEAD..${source.compareRef}`, '--count'], repoRoot) || '0');
+  const commitCount = Number(
+    execGit(['rev-list', `HEAD..${source.compareRef}`, '--count'], repoRoot) || '0',
+  );
   if (options.check) {
     if (commitCount === 0) {
       console.log('✓ Already up to date');
@@ -257,5 +262,7 @@ export async function updateCommand(options: UpdateOptions = {}): Promise<void> 
 
   console.log('');
   console.log('✓ GitNexus update complete.');
-  console.log('  Skipped: analyze. Run `gitnexus analyze` separately for repos that need re-indexing.');
+  console.log(
+    '  Skipped: analyze. Run `gitnexus analyze` separately for repos that need re-indexing.',
+  );
 }

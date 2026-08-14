@@ -53,6 +53,10 @@ jobs:
   #   git push --delete origin rc/<HEAD_SHA> v<RC_VERSION>
   # then redispatch with force=true.
   guard:
+    # npm ownership and trusted-publishing configuration belong to the
+    # canonical upstream repository. A fork may run PR CI, but a push to its
+    # main branch must never mint RC tags or attempt an upstream npm publish.
+    if: github.repository == 'abhigyanpatwari/GitNexus'
     name: Check if release candidate should run
     runs-on: ubuntu-latest
     timeout-minutes: 5

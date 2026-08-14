@@ -9,6 +9,9 @@ owners:
 source_of_truth:
   - gitnexus/src/core/run-analyze.ts
   - gitnexus/src/cli/agent-context.ts
+  - .github/workflows/release-candidate.yml
+  - .github/workflows/publish.yml
+  - .github/workflows/docker.yml
 update_trigger:
   - A lifecycle decision is accepted or superseded
 related_paths:
@@ -49,5 +52,14 @@ Apply requires `--expect <plan-id>`, recomputes desired state under the worktree
 
 ### Verification
 
-- Status: partial
-- Evidence: unit/integration tests and black-box matrix listed in `95-verification-and-runbooks.md`.
+- Status: verified
+- Evidence: unit/integration tests, full-suite coverage, and the black-box matrix listed in `95-verification-and-runbooks.md`.
+
+## D-0004 Keep registry publication canonical-repository-only
+
+- Status: accepted
+- Date: 2026-08-14
+
+RC tags, npm publication, container pushes, signing, and attestations require `github.repository == 'abhigyanpatwari/GitNexus'`. Forks retain PR CI and manual Docker dry-runs; a fork release is an explicit GitHub source release and must not claim npm or container artifacts.
+
+Why: package ownership, trusted publishing, Docker Hub credentials, and documented Cosign identities belong to the canonical repository. Letting the same tag workflow run in a fork creates partial tags and misleading failed releases rather than a usable artifact.

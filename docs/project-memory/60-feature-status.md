@@ -9,6 +9,9 @@ owners:
 source_of_truth:
   - gitnexus/src/cli/
   - gitnexus/src/core/run-analyze.ts
+  - .github/workflows/release-candidate.yml
+  - .github/workflows/publish.yml
+  - .github/workflows/docker.yml
 update_trigger:
   - Feature implementation or verification status changes
 related_paths:
@@ -30,3 +33,4 @@ supersedes: []
 | Stable managed AGENTS block      | implemented | verified     | `ai-context.test.ts`                       | No volatile graph counts                            |
 | Fixed-skill bundle fingerprint   | implemented | verified     | `status-enrichment.test.ts`                | Independent from source commit                      |
 | Legacy generated skills          | implemented | verified     | `skill-gen.test.ts`, compatibility tests   | Explicit compatibility write path                   |
+| Fork-safe registry publication   | implemented | verified     | actionlint, truth-table, release black box | Fork releases are GitHub-source-only                 |

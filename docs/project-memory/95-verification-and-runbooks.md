@@ -9,6 +9,9 @@ owners:
 source_of_truth:
   - gitnexus/package.json
   - gitnexus/test/
+  - .github/workflows/release-candidate.yml
+  - .github/workflows/publish.yml
+  - .github/workflows/docker.yml
 update_trigger:
   - Build, test, or black-box acceptance gates change
 related_paths:
@@ -39,3 +42,12 @@ Required for analyze/context boundary changes:
 8. Run GitNexus `detect_changes` before commit.
 
 Use isolated `HOME` and `GITNEXUS_HOME` for black-box tests. Snapshot tracked and untracked repository paths before/after; do not infer no side effect from exit status alone.
+
+Required before a fork release:
+
+1. Parse `release-candidate.yml`, `publish.yml`, and `docker.yml` as YAML.
+2. Verify the event truth table: fork PR/manual dry-run remains available; fork main/tag paths cannot mint RC tags, publish npm packages, push/sign images, or attest artifacts.
+3. Confirm `package.json`, lockfile, Codex plugin metadata, changelog heading, and release tag agree on one version.
+4. Run the full test/build/typecheck matrix and `npm pack --dry-run`; inspect the tarball file list.
+5. After GitHub PR CI and merge, create an explicit fork GitHub source release. Do not claim npm or container publication.
+6. Install the merged source tarball locally, verify the active package root is not a source link, and repeat the plain-analyze no-agent-asset black box.

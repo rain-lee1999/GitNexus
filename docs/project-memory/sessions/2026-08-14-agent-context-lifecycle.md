@@ -9,6 +9,9 @@ owners:
 source_of_truth:
   - gitnexus/src/cli/agent-context.ts
   - gitnexus/src/core/run-analyze.ts
+  - .github/workflows/release-candidate.yml
+  - .github/workflows/publish.yml
+  - .github/workflows/docker.yml
 update_trigger:
   - Final verification or delivery outcome changes
 related_paths:
@@ -56,3 +59,7 @@ The final side-effect matrix, full test coverage, `detect_changes`, package-sour
 ## Memory Changes
 
 Bootstrapped canonical project memory for architecture, protocol, UX, diagnostics, status, decisions, known issues, and verification.
+
+## Release Candidate
+
+The two independently verified commits were combined for `1.7.0`. Release automation is now fail-closed outside the canonical upstream repository; the fork delivery is explicitly GitHub-source-only. Local actionlint, workflow truth-table checks, typecheck/build, 270/270 test files (7,755 passed, 1 skipped), 1,080-file pack inspection, isolated tarball installation, plain-analyze no-agent-asset black box, and independent release-tail reviews passed. The CLI option-forwarding test now expects doctor to fail when its own fixture deliberately removes Codex from `PATH`, while retaining the project config/skills PASS assertions. Remote PR CI, merge, GitHub release, and post-release active-install readback remain delivery gates.

@@ -75,7 +75,8 @@ describe('CLI help surface', () => {
         ['doctor', 'codex', '--codex-scope', 'project', '--project-root', projectRoot],
         env,
       );
-      expect(doctor.status, doctor.stderr).toBe(0);
+      expect(doctor.status, doctor.stderr).toBe(1);
+      expect(doctor.stdout).toContain('[FAIL] Codex CLI:');
       expect(doctor.stdout).toContain(
         `[PASS] Codex config: ${path.join(projectRoot, '.codex', 'config.toml')}`,
       );

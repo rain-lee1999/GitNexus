@@ -61,13 +61,16 @@ describe('updateCommand', () => {
       ['fetch', '--quiet', sourceRepo, 'main'],
       expect.objectContaining({ cwd: '/target-repo' }),
     );
-    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('2 update commit(s) available'));
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining('2 update commit(s) available'),
+    );
     expect(spawnSyncMock).not.toHaveBeenCalled();
   });
 
   it('makes --simple explicitly tell the user to run gitnexus update when dependency manifests changed', async () => {
     execFileSyncMock.mockImplementation((command: string, args: string[]) => {
-      if (command === 'git' && args.join(' ') === 'rev-parse --show-toplevel') return '/target-repo\n';
+      if (command === 'git' && args.join(' ') === 'rev-parse --show-toplevel')
+        return '/target-repo\n';
       if (command === 'git' && args[0] === 'status') return '';
       if (command === 'git' && args[0] === 'fetch') return '';
       if (command === 'git' && args[0] === 'rev-list') return '1\n';
@@ -81,17 +84,18 @@ describe('updateCommand', () => {
     await updateCommand({ simple: true });
 
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Run: gitnexus update'));
+    expect(spawnSyncMock).not.toHaveBeenCalledWith('node', ['scripts/build.js'], expect.anything());
     expect(spawnSyncMock).not.toHaveBeenCalledWith(
-      'node',
-      ['scripts/build.js'],
+      'npm',
+      ['install', '-g', '.'],
       expect.anything(),
     );
-    expect(spawnSyncMock).not.toHaveBeenCalledWith('npm', ['install', '-g', '.'], expect.anything());
   });
 
   it('makes --simple explicitly tell the user to run gitnexus update --setup when setup-sensitive files changed', async () => {
     execFileSyncMock.mockImplementation((command: string, args: string[]) => {
-      if (command === 'git' && args.join(' ') === 'rev-parse --show-toplevel') return '/target-repo\n';
+      if (command === 'git' && args.join(' ') === 'rev-parse --show-toplevel')
+        return '/target-repo\n';
       if (command === 'git' && args[0] === 'status') return '';
       if (command === 'git' && args[0] === 'fetch') return '';
       if (command === 'git' && args[0] === 'rev-list') return '1\n';
@@ -114,7 +118,9 @@ describe('updateCommand', () => {
       ['install', '-g', '.'],
       expect.objectContaining({ cwd: expect.stringContaining('/gitnexus') }),
     );
-    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Run: gitnexus update --setup'));
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining('Run: gitnexus update --setup'),
+    );
   });
 
   it('runs setup only when --setup is requested on a full update', async () => {
