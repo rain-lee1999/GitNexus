@@ -167,21 +167,51 @@ export const isCompiledRefreshEntrypoint = (
   return path.basename(resolvedEntrypoint) === 'index.js';
 };
 
-const ensureAnalysisHeap = (): boolean => {
-  if (!isCompiledRefreshEntrypoint()) return false;
-  const limit = v8.getHeapStatistics().heap_size_limit;
+interface EnsureAnalysisHeapDependencies {
+  isCompiledEntrypoint?: () => boolean;
+  heapSizeLimit?: () => number;
+  execute?: typeof execFileSync;
+}
+
+const forwardChildStdout = (stdout: unknown): void => {
+  if (typeof stdout === 'string' && stdout.length > 0) {
+    process.stdout.write(stdout);
+  } else if (Buffer.isBuffer(stdout) && stdout.length > 0) {
+    process.stdout.write(stdout);
+  }
+};
+
+/**
+ * Re-run `refresh ensure` with its large heap without losing the child
+ * command's machine-readable stdout. `stdio: 'inherit'` bypasses callers
+ * which capture this process's stdout (notably Codex), so capture only stdout
+ * and relay it through the parent while preserving inherited stdin/stderr.
+ */
+export const ensureAnalysisHeap = (dependencies: EnsureAnalysisHeapDependencies = {}): boolean => {
+  const isCompiledEntrypoint = dependencies.isCompiledEntrypoint ?? isCompiledRefreshEntrypoint;
+  if (!isCompiledEntrypoint()) return false;
+  const limit = (dependencies.heapSizeLimit ?? (() => v8.getHeapStatistics().heap_size_limit))();
   if (limit >= ANALYSIS_HEAP_MB * 1024 * 1024 * 0.9) return false;
+  const execute = dependencies.execute ?? execFileSync;
   try {
-    execFileSync(
+    const stdout = execute(
       process.execPath,
       [`--max-old-space-size=${ANALYSIS_HEAP_MB}`, ...process.argv.slice(1)],
       {
-        stdio: 'inherit',
+        // Preserve stdin/stderr's terminal semantics. Relay stdout ourselves
+        // so `refresh ensure --json` remains observable to its caller.
+        stdio: ['inherit', 'pipe', 'inherit'],
+        encoding: 'utf8',
         env: { ...process.env, GITNEXUS_REFRESH_HEAP_READY: '1' },
       },
     );
-  } catch (error: any) {
-    process.exitCode = error?.status ?? 1;
+    forwardChildStdout(stdout);
+  } catch (error: unknown) {
+    const childError = error as { status?: number | null; stdout?: string | Buffer };
+    // A failing child can still have emitted a useful JSON result before it
+    // exits. Preserve that output and propagate its actual exit status.
+    forwardChildStdout(childError.stdout);
+    process.exitCode = typeof childError.status === 'number' ? childError.status : 1;
   }
   return true;
 };

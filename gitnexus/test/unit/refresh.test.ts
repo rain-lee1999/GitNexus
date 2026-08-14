@@ -90,6 +90,49 @@ describe('worktree refresh coordinator', () => {
     ).toBe(false);
   });
 
+  it('forwards JSON and preserves the child exit status across the analysis heap restart', async () => {
+    const { ensureAnalysisHeap } = await import('../../src/cli/refresh.js');
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const execute = vi.fn(() => '{"status":"ready"}\n') as unknown as typeof execFileSync;
+
+    expect(
+      ensureAnalysisHeap({
+        isCompiledEntrypoint: () => true,
+        heapSizeLimit: () => 1,
+        execute,
+      }),
+    ).toBe(true);
+    expect(write).toHaveBeenCalledWith('{"status":"ready"}\n');
+    expect(execute).toHaveBeenCalledWith(
+      process.execPath,
+      [`--max-old-space-size=8192`, ...process.argv.slice(1)],
+      expect.objectContaining({
+        encoding: 'utf8',
+        stdio: ['inherit', 'pipe', 'inherit'],
+        env: expect.objectContaining({ GITNEXUS_REFRESH_HEAP_READY: '1' }),
+      }),
+    );
+
+    const failure = Object.assign(new Error('child failed'), {
+      status: 23,
+      stdout: '{"status":"failed"}\n',
+    });
+    const failingExecute = vi.fn(() => {
+      throw failure;
+    }) as unknown as typeof execFileSync;
+    process.exitCode = undefined;
+
+    expect(
+      ensureAnalysisHeap({
+        isCompiledEntrypoint: () => true,
+        heapSizeLimit: () => 1,
+        execute: failingExecute,
+      }),
+    ).toBe(true);
+    expect(write).toHaveBeenCalledWith('{"status":"failed"}\n');
+    expect(process.exitCode).toBe(23);
+  });
+
   it('reports every potential refresh write target without creating coordinator state', async () => {
     const repo = await createRepo();
     const home = await createTempDir('gitnexus-refresh-plan-home-');
