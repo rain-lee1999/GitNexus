@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import { execFileSync, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
+import { resolveSpawnInvocation } from './command-invocation.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,7 +34,8 @@ function execGit(args: string[], cwd: string): string {
 }
 
 function runCommand(command: string, args: string[], cwd: string): void {
-  const result = spawnSync(command, args, { cwd, stdio: 'inherit' });
+  const invocation = resolveSpawnInvocation(command, args);
+  const result = spawnSync(invocation.command, invocation.args, { cwd, stdio: 'inherit' });
   if (result.error) {
     throw result.error;
   }
@@ -160,19 +162,23 @@ function restoreStashIfNeeded(repoRoot: string, marker: string | null): void {
 
 function installDependencies(): void {
   console.log('→ Installing dependencies...');
-  runCommand('npm', ['install'], PACKAGE_ROOT);
+  runCommand(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['install'], PACKAGE_ROOT);
 }
 
 function buildAndInstall(): void {
   console.log('→ Building GitNexus...');
-  runCommand('node', ['scripts/build.js'], PACKAGE_ROOT);
+  runCommand(process.execPath, ['scripts/build.js'], PACKAGE_ROOT);
   console.log('→ Installing global gitnexus...');
-  runCommand('npm', ['install', '-g', '.'], PACKAGE_ROOT);
+  runCommand(
+    process.platform === 'win32' ? 'npm.cmd' : 'npm',
+    ['install', '-g', '.'],
+    PACKAGE_ROOT,
+  );
 }
 
 function runSetup(): void {
   console.log('→ Running gitnexus setup...');
-  runCommand('node', [DIST_CLI, 'setup'], PACKAGE_ROOT);
+  runCommand(process.execPath, [DIST_CLI, 'setup'], PACKAGE_ROOT);
 }
 
 export async function updateCommand(options: UpdateOptions = {}): Promise<void> {

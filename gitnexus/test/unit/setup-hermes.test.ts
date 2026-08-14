@@ -17,8 +17,9 @@ const execFileMock = vi.fn((...args: any[]) => {
 
 const execFileSyncMock = vi.fn((cmd: string, args: string[]) => {
   const commandName = args[0];
-  if (cmd === 'which' && commandName === 'hermes') return '/usr/local/bin/hermes\n';
-  if (cmd === 'which' && commandName === 'gitnexus') return '/usr/local/bin/gitnexus\n';
+  const lookupCommand = process.platform === 'win32' ? 'where' : 'which';
+  if (cmd === lookupCommand && commandName === 'hermes') return '/usr/local/bin/hermes\n';
+  if (cmd === lookupCommand && commandName === 'gitnexus') return '/usr/local/bin/gitnexus\n';
   throw new Error('not found');
 });
 
@@ -42,14 +43,6 @@ describe('setupCommand Hermes support', () => {
   let originalHome: string | undefined;
   let originalUserProfile: string | undefined;
   let originalCodexHome: string | undefined;
-  let platformDescriptor: PropertyDescriptor | undefined;
-
-  const setPlatform = (value: NodeJS.Platform) => {
-    Object.defineProperty(process, 'platform', {
-      value,
-      configurable: true,
-    });
-  };
 
   beforeEach(async () => {
     vi.resetModules();
@@ -63,17 +56,11 @@ describe('setupCommand Hermes support', () => {
     process.env.USERPROFILE = tempHome;
     delete process.env.CODEX_HOME;
 
-    platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
-    setPlatform('darwin');
     vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
-
-    if (platformDescriptor) {
-      Object.defineProperty(process, 'platform', platformDescriptor);
-    }
 
     process.env.HOME = originalHome;
     process.env.USERPROFILE = originalUserProfile;
@@ -91,7 +78,7 @@ describe('setupCommand Hermes support', () => {
     expect(spawnMock).toHaveBeenCalledWith(
       '/usr/local/bin/hermes',
       ['mcp', 'add', 'gitnexus', '--command', '/usr/local/bin/gitnexus', '--args', 'mcp'],
-      { shell: false, stdio: ['pipe', 'pipe', 'pipe'] },
+      { shell: process.platform === 'win32', stdio: ['pipe', 'pipe', 'pipe'] },
     );
     expect(spawnMock.mock.results[0].value.stdin.end).toHaveBeenCalledWith('Y\n');
   });
@@ -100,8 +87,11 @@ describe('setupCommand Hermes support', () => {
     await fs.mkdir(path.join(tempHome, '.hermes'), { recursive: true });
     execFileSyncMock.mockImplementation((cmd: string, args: string[]) => {
       const commandName = args[0];
-      if (cmd === 'which' && commandName === 'hermes') return '/usr/local/bin/hermes\n';
-      if (cmd === 'which' && commandName === 'gitnexus') throw new Error('not found');
+      const lookupCommand = process.platform === 'win32' ? 'where' : 'which';
+      if (cmd === lookupCommand && commandName === 'hermes') {
+        return '/usr/local/bin/hermes\n';
+      }
+      if (cmd === lookupCommand && commandName === 'gitnexus') throw new Error('not found');
       throw new Error('not found');
     });
 
@@ -111,7 +101,7 @@ describe('setupCommand Hermes support', () => {
     expect(spawnMock).toHaveBeenCalledWith(
       '/usr/local/bin/hermes',
       ['mcp', 'add', 'gitnexus', '--command', 'npx', '--args', '-y', packageSpecifier, 'mcp'],
-      { shell: false, stdio: ['pipe', 'pipe', 'pipe'] },
+      { shell: process.platform === 'win32', stdio: ['pipe', 'pipe', 'pipe'] },
     );
     expect(spawnMock.mock.results[0].value.stdin.end).toHaveBeenCalledWith('Y\n');
   });

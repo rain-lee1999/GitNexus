@@ -112,15 +112,31 @@ afterEach(async () => {
   );
 });
 
+async function createNodeCommand(basePath: string, source: string): Promise<string> {
+  if (process.platform === 'win32') {
+    const scriptPath = `${basePath}.cjs`;
+    const launcherPath = `${basePath}.cmd`;
+    await writeFile(scriptPath, source, 'utf8');
+    await writeFile(
+      launcherPath,
+      `@echo off\r\n"${process.execPath}" "${scriptPath}" %*\r\n`,
+      'utf8',
+    );
+    return launcherPath;
+  }
+
+  await writeFile(basePath, `#!${process.execPath}\n${source}`, 'utf8');
+  await chmod(basePath, 0o755);
+  return basePath;
+}
+
 async function createFakeRefreshCli(
   directory: string,
 ): Promise<{ cliPath: string; logPath: string }> {
-  const cliPath = path.join(directory, 'fake-gitnexus-refresh.cjs');
   const logPath = path.join(directory, 'refresh-calls.jsonl');
-  await writeFile(
-    cliPath,
-    `#!/usr/bin/env node
-const fs = require('node:fs');
+  const cliPath = await createNodeCommand(
+    path.join(directory, 'fake-gitnexus-refresh'),
+    `const fs = require('node:fs');
 const args = process.argv.slice(2);
 if (process.env.GITNEXUS_TEST_REFRESH_LOG) {
   fs.appendFileSync(process.env.GITNEXUS_TEST_REFRESH_LOG, JSON.stringify(args) + '\\n');
@@ -132,9 +148,7 @@ if (args[0] === 'refresh' && args[1] === 'status') {
 if (args[0] === 'refresh' && args[1] === 'mark') process.exit(0);
 process.exit(1);
 `,
-    'utf8',
   );
-  await chmod(cliPath, 0o755);
   return { cliPath, logPath };
 }
 
@@ -232,30 +246,26 @@ async function createPathGitNexusCli(
   directory: string,
 ): Promise<{ binDirectory: string; logPath: string }> {
   const binDirectory = path.join(directory, 'bin');
-  const cliPath = path.join(binDirectory, 'gitnexus');
   const logPath = path.join(directory, 'path-gitnexus-calls.jsonl');
   await mkdir(binDirectory, { recursive: true });
-  await writeFile(
-    cliPath,
-    `#!${process.execPath}
-const fs = require('node:fs');
+  await createNodeCommand(
+    path.join(binDirectory, 'gitnexus'),
+    `const fs = require('node:fs');
 fs.appendFileSync(process.env.GITNEXUS_TEST_PATH_CLI_LOG, JSON.stringify(process.argv.slice(2)) + '\\n');
 process.stdout.write('{"refreshRequired":false,"alias":"path-cli"}');
 `,
-    'utf8',
   );
-  await chmod(cliPath, 0o755);
   return { binDirectory, logPath };
 }
 
 async function addGitToPath(binDirectory: string): Promise<void> {
-  const gitPath = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
-  await writeFile(
-    path.join(binDirectory, 'git'),
-    `#!/bin/sh\nexec ${JSON.stringify(gitPath)} \"$@\"\n`,
-    'utf8',
-  );
-  await chmod(path.join(binDirectory, 'git'), 0o755);
+  const lookupCommand = process.platform === 'win32' ? 'where' : 'which';
+  const gitPath = execFileSync(lookupCommand, ['git'], { encoding: 'utf8' })
+    .split(/\r?\n/)
+    .find(Boolean)
+    ?.trim();
+  if (!gitPath) throw new Error('git executable was not found for the test fixture');
+  process.env.PATH = [binDirectory, path.dirname(gitPath)].join(path.delimiter);
 }
 
 describe('Codex plugin bundle', () => {
@@ -402,7 +412,6 @@ describe('Codex hook behavior', () => {
     await mkdir(binDirectory, { recursive: true });
     await addGitToPath(binDirectory);
     delete process.env.GITNEXUS_CLI;
-    process.env.PATH = binDirectory;
 
     const writes: string[] = [];
     vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: unknown) => {
@@ -437,7 +446,6 @@ describe('Codex hook behavior', () => {
     const { binDirectory, logPath } = await createPathGitNexusCli(directory);
     await addGitToPath(binDirectory);
     delete process.env.GITNEXUS_CLI;
-    process.env.PATH = binDirectory;
     process.env.GITNEXUS_TEST_PATH_CLI_LOG = logPath;
 
     await expect(
@@ -459,7 +467,6 @@ describe('Codex hook behavior', () => {
     await mkdir(binDirectory, { recursive: true });
     await addGitToPath(binDirectory);
     delete process.env.GITNEXUS_CLI;
-    process.env.PATH = binDirectory;
 
     expect(() => cachedGitHook.main(['--event', 'post-commit'], directory)).not.toThrow();
     await expect(stat(path.join(directory, '.gitnexus'))).rejects.toThrow();
@@ -474,23 +481,23 @@ describe('Codex hook behavior', () => {
     expect(hook.extractSearchPattern(`rg ${'x'.repeat(201)}`)).toBeNull();
   });
 
-  it('uses an argv-safe cmd.exe launcher for Windows command shims', () => {
+  it('uses an explicit cmd.exe launcher and rejects command metacharacters', () => {
     const args = [
       'refresh',
       'mark',
       '--path',
-      'C:\\worktrees\\safe & intact',
+      'C:\\worktrees\\safe path',
       '--reason',
       'git-commit',
     ];
     const expected = {
       command: 'C:\\Windows\\System32\\cmd.exe',
-      args: ['/d', '/s', '/c', 'C:\\Program Files\\GitNexus\\gitnexus.cmd', ...args],
+      args: ['/d', '/s', '/c', 'C:\\Program Files (x86)\\GitNexus\\gitnexus.cmd', ...args],
     };
 
     expect(
       hook.cliLaunch(
-        'C:\\Program Files\\GitNexus\\gitnexus.cmd',
+        'C:\\Program Files (x86)\\GitNexus\\gitnexus.cmd',
         args,
         'win32',
         'C:\\Windows\\System32\\cmd.exe',
@@ -498,12 +505,18 @@ describe('Codex hook behavior', () => {
     ).toEqual(expected);
     expect(
       gitHook.cliLaunch(
-        'C:\\Program Files\\GitNexus\\gitnexus.cmd',
+        'C:\\Program Files (x86)\\GitNexus\\gitnexus.cmd',
         args,
         'win32',
         'C:\\Windows\\System32\\cmd.exe',
       ),
     ).toEqual(expected);
+    expect(() =>
+      hook.cliLaunch('C:\\Tools\\gitnexus.cmd', ['--path', 'C:\\repo&whoami'], 'win32'),
+    ).toThrow('cmd.exe metacharacters');
+    expect(() =>
+      gitHook.cliLaunch('C:\\Tools\\gitnexus.cmd', ['--path', 'C:\\repo|whoami'], 'win32'),
+    ).toThrow('cmd.exe metacharacters');
     expect(hook.cliLaunch('gitnexus', args, 'linux')).toEqual({ command: 'gitnexus', args });
   });
 

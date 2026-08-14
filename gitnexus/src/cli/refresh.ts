@@ -32,6 +32,7 @@ import {
 } from '../storage/repo-manager.js';
 import { getCurrentCommit, getGitRoot } from '../storage/git.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
+import { resolveSpawnInvocation } from './command-invocation.js';
 
 const _require = createRequire(import.meta.url);
 const yaml = _require('js-yaml') as typeof import('js-yaml');
@@ -966,21 +967,19 @@ const runSerenaInitialization = async (
     throw new Error(`Serena executable does not exist: ${serenaBin}`);
   }
   const serenaHome = getSerenaHome();
+  const serenaArgs = [
+    'project',
+    'index',
+    worktreePath,
+    ...serenaLanguages.flatMap((language) => ['--language', language]),
+  ];
+  const launch = resolveSpawnInvocation(serenaBin, serenaArgs);
   await withFileLock(path.join(serenaHome, SERENA_LOCK_FILE), async () => {
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(
-        serenaBin,
-        [
-          'project',
-          'index',
-          worktreePath,
-          ...serenaLanguages.flatMap((language) => ['--language', language]),
-        ],
-        {
-          cwd: worktreePath,
-          stdio: ['ignore', 'inherit', 'inherit'],
-        },
-      );
+      const child = spawn(launch.command, launch.args, {
+        cwd: worktreePath,
+        stdio: ['ignore', 'inherit', 'inherit'],
+      });
       child.once('error', reject);
       child.once('exit', (code, signal) => {
         if (code === 0) resolve();
@@ -1041,32 +1040,30 @@ const queueEnsure = async (worktreePath: string, state: RefreshState): Promise<R
   }
   const invocation = resolveCliInvocation();
   if (!invocation) return 'unavailable';
+  const invocationArgs = [
+    ...(invocation.command === process.execPath
+      ? [`--max-old-space-size=${ANALYSIS_HEAP_MB}`]
+      : []),
+    ...invocation.args,
+    'refresh',
+    'ensure',
+    '--path',
+    worktreePath,
+    '--json',
+  ];
   let child;
   try {
-    child = spawn(
-      invocation.command,
-      [
-        ...(invocation.command === process.execPath
-          ? [`--max-old-space-size=${ANALYSIS_HEAP_MB}`]
-          : []),
-        ...invocation.args,
-        'refresh',
-        'ensure',
-        '--path',
-        worktreePath,
-        '--json',
-      ],
-      {
-        cwd: worktreePath,
-        detached: true,
-        stdio: 'ignore',
-        env: {
-          ...process.env,
-          NODE_OPTIONS:
-            `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=${ANALYSIS_HEAP_MB}`.trim(),
-        },
+    const launch = resolveSpawnInvocation(invocation.command, invocationArgs);
+    child = spawn(launch.command, launch.args, {
+      cwd: worktreePath,
+      detached: true,
+      stdio: 'ignore',
+      env: {
+        ...process.env,
+        NODE_OPTIONS:
+          `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=${ANALYSIS_HEAP_MB}`.trim(),
       },
-    );
+    });
   } catch {
     return 'unavailable';
   }
@@ -1076,22 +1073,31 @@ const queueEnsure = async (worktreePath: string, state: RefreshState): Promise<R
   // surface as an unhandled ChildProcess error.
   const pid = child.pid;
   let launchFailed = false;
+  let childExited = false;
+  let leaseWritten = false;
+  const clearWrittenLease = (): void => {
+    if (leaseWritten && pid) void clearRequestLeaseForPid(worktreePath, pid).catch(() => {});
+  };
   child.once('error', () => {
     launchFailed = true;
-    void clearRequestLeaseForPid(worktreePath, pid).catch(() => {});
+    clearWrittenLease();
   });
-  child.once('exit', (code) => {
-    // Normal `ensure` clears its own lease on success/failure. This is a
-    // crash/early-entrypoint fallback for cases that never reach ensure.
-    if (code !== 0) void clearRequestLeaseForPid(worktreePath, pid).catch(() => {});
+  child.once('exit', () => {
+    childExited = true;
+    clearWrittenLease();
   });
   await new Promise<void>((resolve) => setImmediate(resolve));
-  if (launchFailed || !pid) return 'unavailable';
+  if (launchFailed || childExited || !pid) return 'unavailable';
   child.unref();
   state.lastRequestAt = new Date(now).toISOString();
   state.requestPid = pid;
   state.requestExpiresAt = new Date(now + REQUEST_LEASE_MS).toISOString();
   await writeJsonAtomically(getRefreshPaths(worktreePath).statePath, state);
+  leaseWritten = true;
+  if (launchFailed || childExited) {
+    await clearRequestLeaseForPid(worktreePath, pid).catch(() => {});
+    return 'unavailable';
+  }
   return 'queued';
 };
 

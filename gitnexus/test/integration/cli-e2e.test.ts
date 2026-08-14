@@ -191,7 +191,7 @@ function changedAgentAssetPaths(
   const skillPaths = new Set([...Object.keys(before.skills), ...Object.keys(after.skills)]);
   for (const relativePath of skillPaths) {
     if (before.skills[relativePath] !== after.skills[relativePath]) {
-      changed.push(`.agents/${relativePath}`);
+      changed.push(`.agents/${relativePath.split(path.sep).join('/')}`);
     }
   }
   return changed.sort();

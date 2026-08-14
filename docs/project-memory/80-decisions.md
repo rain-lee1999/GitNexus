@@ -9,6 +9,11 @@ owners:
 source_of_truth:
   - gitnexus/src/core/run-analyze.ts
   - gitnexus/src/cli/agent-context.ts
+  - gitnexus/src/cli/refresh.ts
+  - gitnexus/src/cli/command-invocation.ts
+  - gitnexus/src/cli/update.ts
+  - gitnexus/codex-plugin/hooks/gitnexus-hook.cjs
+  - gitnexus/codex-plugin/hooks/gitnexus-git-hook.cjs
   - .github/workflows/release-candidate.yml
   - .github/workflows/publish.yml
   - .github/workflows/docker.yml
@@ -17,9 +22,17 @@ update_trigger:
 related_paths:
   - gitnexus/src/core/run-analyze.ts
   - gitnexus/src/cli/agent-context.ts
+  - gitnexus/src/cli/refresh.ts
+  - gitnexus/src/cli/command-invocation.ts
+  - gitnexus/src/cli/update.ts
+  - gitnexus/codex-plugin/hooks/gitnexus-hook.cjs
+  - gitnexus/codex-plugin/hooks/gitnexus-git-hook.cjs
 related_tests:
   - gitnexus/test/unit/agent-context.test.ts
   - gitnexus/test/integration/cli-e2e.test.ts
+  - gitnexus/test/unit/refresh.test.ts
+  - gitnexus/test/unit/update-command.test.ts
+  - gitnexus/test/unit/codex-plugin.test.ts
 supersedes: []
 ---
 
@@ -63,3 +76,12 @@ Apply requires `--expect <plan-id>`, recomputes desired state under the worktree
 RC tags, npm publication, container pushes, signing, and attestations require `github.repository == 'abhigyanpatwari/GitNexus'`. Forks retain PR CI and manual Docker dry-runs; a fork release is an explicit GitHub source release and must not claim npm or container artifacts.
 
 Why: package ownership, trusted publishing, Docker Hub credentials, and documented Cosign identities belong to the canonical repository. Letting the same tag workflow run in a fork creates partial tags and misleading failed releases rather than a usable artifact.
+
+## D-0005 Launch Windows command shims explicitly
+
+- Status: accepted
+- Date: 2026-08-14
+
+Node entrypoints should bypass package-manager `.cmd` shims and launch their JavaScript bins with `process.execPath`. When refresh, update, or a hook must execute a `.cmd` or `.bat` file, use explicit `ComSpec /d /s /c` argv and reject cmd.exe metacharacters in every script path and argument.
+
+Why: Windows `CreateProcess` cannot execute command scripts directly, while `shell: true` broadens command interpretation for repository paths and hook-controlled arguments. Explicitly spawning cmd.exe does not make its `/c` arguments literal; fail-closed metacharacter validation is therefore part of the boundary.

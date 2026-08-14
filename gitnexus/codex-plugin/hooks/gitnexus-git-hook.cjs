@@ -54,12 +54,19 @@ function configuredCliPath() {
 }
 
 /**
- * .cmd/.bat shims need cmd.exe on Windows. Keep arguments as an argv array
- * and leave shell disabled so hook-controlled paths never become interpolated
- * command text.
+ * .cmd/.bat shims need cmd.exe on Windows. cmd.exe still parses `/c`
+ * arguments, so reject metacharacters instead of relying on argv separation.
  */
 function cliLaunch(command, args, platform = process.platform, comSpec = process.env.ComSpec) {
   if (platform === 'win32' && /\.(?:cmd|bat)$/i.test(command)) {
+    const unsafeValue = [command, ...args].find(
+      (value) => /[&|<>^%!"\r\n]/.test(value) || (/[()]/.test(value) && !/[\t ]/.test(value)),
+    );
+    if (unsafeValue !== undefined) {
+      throw new Error(
+        'Windows command-script launch rejected a path or argument containing cmd.exe metacharacters.',
+      );
+    }
     return {
       command: comSpec || 'cmd.exe',
       args: ['/d', '/s', '/c', command, ...args],

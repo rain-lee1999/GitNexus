@@ -28,6 +28,24 @@ const createRepo = async () => {
   return repo;
 };
 
+const createNodeCommand = async (basePath: string, source: string): Promise<string> => {
+  if (process.platform === 'win32') {
+    const scriptPath = `${basePath}.cjs`;
+    const launcherPath = `${basePath}.cmd`;
+    await fs.writeFile(scriptPath, source, 'utf8');
+    await fs.writeFile(
+      launcherPath,
+      `@echo off\r\n"${process.execPath}" "${scriptPath}" %*\r\n`,
+      'utf8',
+    );
+    return launcherPath;
+  }
+
+  await fs.writeFile(basePath, `#!${process.execPath}\n${source}`, { mode: 0o755 });
+  await fs.chmod(basePath, 0o755);
+  return basePath;
+};
+
 beforeEach(() => {
   runFullAnalysisMock.mockReset();
   process.exitCode = undefined;
@@ -47,6 +65,36 @@ afterEach(async () => {
 });
 
 describe('worktree refresh coordinator', () => {
+  it('wraps Windows cmd and bat launchers without enabling shell interpolation', async () => {
+    const { resolveSpawnInvocation } = await import('../../src/cli/command-invocation.js');
+    const args = ['project', 'index', 'C:\\repo with spaces'];
+    const comSpec = 'C:\\Windows\\System32\\cmd.exe';
+
+    expect(
+      resolveSpawnInvocation('C:\\Program Files (x86)\\Serena\\serena.cmd', args, 'win32', comSpec),
+    ).toEqual({
+      command: comSpec,
+      args: ['/d', '/s', '/c', 'C:\\Program Files (x86)\\Serena\\serena.cmd', ...args],
+    });
+    expect(resolveSpawnInvocation('C:\\Tools\\gitnexus.bat', args, 'win32')).toEqual({
+      command: 'cmd.exe',
+      args: ['/d', '/s', '/c', 'C:\\Tools\\gitnexus.bat', ...args],
+    });
+    expect(() =>
+      resolveSpawnInvocation('C:\\Tools\\serena.cmd', ['--path', 'C:\\repo&whoami'], 'win32'),
+    ).toThrow('cmd.exe metacharacters');
+    expect(() => resolveSpawnInvocation('C:\\unsafe&tool.cmd', ['status'], 'win32')).toThrow(
+      'cmd.exe metacharacters',
+    );
+    expect(() => resolveSpawnInvocation('C:\\Tools(x86)\\serena.cmd', ['status'], 'win32')).toThrow(
+      'cmd.exe metacharacters',
+    );
+    expect(resolveSpawnInvocation('/usr/local/bin/serena', args, 'linux', comSpec)).toEqual({
+      command: '/usr/local/bin/serena',
+      args,
+    });
+  });
+
   it('requires an absolute worktree root and derives collision-resistant aliases', async () => {
     const repo = await createRepo();
     const { deriveWorktreeAlias, resolveWorktreePath } = await import('../../src/cli/refresh.js');
@@ -309,11 +357,12 @@ describe('worktree refresh coordinator', () => {
     handles.push(linked);
     execFileSync('git', ['worktree', 'add', '--detach', linked.dbPath], { cwd: root });
     const linkedRoot = await fs.realpath(linked.dbPath);
-    const linkedHooksDirectory = execFileSync(
-      'git',
-      ['rev-parse', '--path-format=absolute', '--git-path', 'hooks'],
-      { cwd: linkedRoot, encoding: 'utf8' },
-    ).trim();
+    const linkedHooksDirectory = path.resolve(
+      execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-path', 'hooks'], {
+        cwd: linkedRoot,
+        encoding: 'utf8',
+      }).trim(),
+    );
     const linkedPlan = getRefreshPlan(linkedRoot, { installGitHooks: true });
     expect(linkedPlan.writeTargets).toEqual(
       expect.arrayContaining([
@@ -521,19 +570,44 @@ describe('worktree refresh coordinator', () => {
     );
   });
 
+  it('clears the detached request lease when its launcher exits immediately', async () => {
+    const repo = await createRepo();
+    const cliPath = await createNodeCommand(
+      path.join(repo.dbPath, 'immediate-exit-gitnexus'),
+      'process.exit(0);\n',
+    );
+    process.env.GITNEXUS_CLI = cliPath;
+    const { refreshCommand } = await import('../../src/cli/refresh.js');
+
+    await refreshCommand('init', { path: repo.dbPath, json: true });
+    await refreshCommand('request', { path: repo.dbPath, json: true });
+
+    const statePath = path.join(repo.dbPath, '.gitnexus', 'refresh', 'state.json');
+    let state: { requestPid?: number; requestExpiresAt?: string } = {};
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      state = JSON.parse(await fs.readFile(statePath, 'utf8')) as typeof state;
+      if (!state.requestPid && !state.requestExpiresAt) break;
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    }
+    expect(state.requestPid).toBeUndefined();
+    expect(state.requestExpiresAt).toBeUndefined();
+  });
+
   it('prewarms Serena non-interactively with every explicit language', async () => {
     const repo = await createRepo();
     const home = await createTempDir('gitnexus-refresh-serena-home-');
     const serenaHome = await createTempDir('gitnexus-refresh-serena-state-');
     handles.push(home, serenaHome);
-    const fakeSerena = path.join(repo.dbPath, 'fake-serena');
     const argsPath = path.join(repo.dbPath, 'serena-args.txt');
-    await fs.writeFile(
-      fakeSerena,
-      '#!/usr/bin/env sh\nprintf \'%s\\n\' "$@" > "$GITNEXUS_SERENA_ARGS_FILE"\n',
-      { mode: 0o755 },
+    const fakeSerena = await createNodeCommand(
+      path.join(repo.dbPath, 'fake-serena'),
+      `const fs = require('node:fs');
+fs.writeFileSync(
+  process.env.GITNEXUS_SERENA_ARGS_FILE,
+  process.argv.slice(2).join('\\n') + '\\n',
+);
+`,
     );
-    await fs.chmod(fakeSerena, 0o755);
     process.env.GITNEXUS_HOME = home.dbPath;
     process.env.SERENA_HOME = serenaHome.dbPath;
     process.env.GITNEXUS_SERENA_ARGS_FILE = argsPath;

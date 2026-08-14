@@ -66,7 +66,7 @@ describe('destructive index commands use the worktree analysis lock', () => {
   });
 
   it('locks the current worktree for clean --force before deleting and unregistering', async () => {
-    const repoPath = '/worktrees/current';
+    const repoPath = path.resolve('worktrees', 'current');
     const storagePath = path.join(repoPath, '.gitnexus');
     findRepoMock.mockResolvedValue({ repoPath, storagePath });
     const { cleanCommand } = await import('../../src/cli/clean.js');
@@ -79,10 +79,10 @@ describe('destructive index commands use the worktree analysis lock', () => {
   });
 
   it('locks every registered worktree for clean --all --force', async () => {
-    const entries = ['/worktrees/one', '/worktrees/two'].map((repoPath, index) => ({
+    const entries = ['one', 'two'].map((name, index) => ({
       name: `repo-${index + 1}`,
-      path: repoPath,
-      storagePath: path.join(repoPath, '.gitnexus'),
+      path: path.resolve('worktrees', name),
+      storagePath: path.resolve('worktrees', name, '.gitnexus'),
     }));
     listRegisteredReposMock.mockResolvedValue(entries);
     const { cleanCommand } = await import('../../src/cli/clean.js');
@@ -97,7 +97,7 @@ describe('destructive index commands use the worktree analysis lock', () => {
   });
 
   it('locks the resolved target worktree for remove --force', async () => {
-    const repoPath = '/worktrees/target';
+    const repoPath = path.resolve('worktrees', 'target');
     const entry = {
       name: 'target',
       path: repoPath,

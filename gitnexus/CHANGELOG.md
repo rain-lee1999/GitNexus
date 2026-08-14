@@ -20,7 +20,8 @@ All notable changes to GitNexus will be documented in this file.
 ### Fixed
 
 - **Windows source builds** — Build orchestration now invokes TypeScript's JavaScript entrypoint with the current Node executable instead of trying to execute a `.cmd` shim directly.
-- **Optional-parser CI gating** — Kotlin resolver suites now follow the existing Swift contract and skip only when their declared optional native parser is unavailable; parser-supported jobs still run all 175 assertions.
+- **Optional-parser CI gating** — All Kotlin suites that exercise the declared optional native parser now follow the existing Swift capability contract; parser-supported jobs still run all 210 parser-dependent assertions.
+- **Windows command and fixture portability** — Refresh, update, and Codex hooks now launch required `.cmd`/`.bat` entrypoints through explicit `ComSpec` argv without `shell: true`, reject cmd.exe metacharacters fail closed, and use executable cross-platform Node fixtures.
 - **Heap-restart JSON forwarding** — refresh supervision now preserves exactly one machine-parseable JSON document and the child exit status when a command re-executes with a larger heap.
 - **Fork-safe release automation** — forks retain PR CI and manual Docker dry-runs, but RC, npm, image push, signing, and attestation paths fail closed outside `abhigyanpatwari/GitNexus`.
 

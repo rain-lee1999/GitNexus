@@ -9,6 +9,24 @@ import { applyAIContextPlan } from '../../src/cli/agent-context-apply.js';
 import { getStoragePaths, saveMeta, type RepoMeta } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
 
+async function expectPlanPathMatchesReportedRepo(
+  output: string,
+  expectedRepoPath: string,
+): Promise<void> {
+  const repoPath = output.match(/^Repository: (.+)$/m)?.[1];
+  if (!repoPath) throw new Error(`Missing repository path in status output:\n${output}`);
+  const [reportedRealPath, expectedRealPath] = await Promise.all([
+    fs.realpath(repoPath),
+    fs.realpath(expectedRepoPath),
+  ]);
+  const normalize = (value: string) => {
+    const nativePath = path.normalize(value);
+    return process.platform === 'win32' ? nativePath.toLowerCase() : nativePath;
+  };
+  expect(normalize(reportedRealPath)).toBe(normalize(expectedRealPath));
+  expect(output).toContain(`gitnexus agent-context plan --path '${repoPath}'`);
+}
+
 describe('statusCommand enrichment reporting', () => {
   let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
   let originalCwd: string;
@@ -130,9 +148,7 @@ describe('statusCommand enrichment reporting', () => {
       'Agent helpers: AGENTS.md missing, managed skills missing, generated skills not-generated',
     );
     expect(output).toContain('Recommendation: run gitnexus analyze --force --embeddings');
-    expect(output).toContain(
-      `gitnexus agent-context plan --path '${await fs.realpath(tmpRepo.dbPath)}'`,
-    );
+    await expectPlanPathMatchesReportedRepo(output, tmpRepo.dbPath);
     expect(output).not.toContain('Recommendation: run gitnexus analyze --force --skills');
   });
 
@@ -186,9 +202,7 @@ describe('statusCommand enrichment reporting', () => {
 
     const output = logs.join('\n');
     expect(output).toContain('Agent helpers: AGENTS.md stale, managed skills current');
-    expect(output).toContain(
-      `gitnexus agent-context plan --path '${await fs.realpath(tmpRepo.dbPath)}'`,
-    );
+    await expectPlanPathMatchesReportedRepo(output, tmpRepo.dbPath);
     expect(output).not.toContain('Recommendation: run gitnexus analyze --force --skills');
   });
 

@@ -32,6 +32,10 @@ const pluginEntry = {
   command: 'npx',
   args: ['-y', packageSpecifier, 'mcp'],
 };
+const platformPluginEntry =
+  process.platform === 'win32'
+    ? { command: 'cmd', args: ['/c', pluginEntry.command, ...pluginEntry.args] }
+    : pluginEntry;
 
 function registration(entry = pluginEntry) {
   return JSON.stringify({
@@ -124,25 +128,25 @@ describe('Codex setup', () => {
     expect(execFileMock).toHaveBeenCalledWith(
       '/usr/local/bin/codex',
       ['plugin', 'marketplace', 'add', bundlePath, '--json'],
-      expect.objectContaining({ shell: false }),
+      expect.objectContaining({ shell: process.platform === 'win32' }),
       expect.any(Function),
     );
     expect(execFileMock).not.toHaveBeenCalledWith(
       '/usr/local/bin/codex',
       ['plugin', 'marketplace', 'remove', 'gitnexus', '--json'],
-      expect.objectContaining({ shell: false }),
+      expect.objectContaining({ shell: process.platform === 'win32' }),
       expect.any(Function),
     );
     expect(execFileMock).toHaveBeenCalledWith(
       '/usr/local/bin/codex',
       ['plugin', 'add', 'gitnexus@gitnexus', '--json'],
-      expect.objectContaining({ shell: false }),
+      expect.objectContaining({ shell: process.platform === 'win32' }),
       expect.any(Function),
     );
     expect(execFileMock).toHaveBeenCalledWith(
       '/usr/local/bin/codex',
       ['mcp', 'get', 'gitnexus', '--json'],
-      expect.objectContaining({ shell: false }),
+      expect.objectContaining({ shell: process.platform === 'win32' }),
       expect.any(Function),
     );
     expect(execFileMock).not.toHaveBeenCalledWith(
@@ -238,8 +242,8 @@ describe('Codex setup', () => {
 
     expect(execFileMock).toHaveBeenCalledWith(
       '/usr/local/bin/codex',
-      ['mcp', 'add', 'gitnexus', '--', 'npx', '-y', packageSpecifier, 'mcp'],
-      expect.objectContaining({ shell: false }),
+      ['mcp', 'add', 'gitnexus', '--', platformPluginEntry.command, ...platformPluginEntry.args],
+      expect.objectContaining({ shell: process.platform === 'win32' }),
       expect.any(Function),
     );
     expect(result.configured).toContain('Codex (direct MCP fallback)');
@@ -317,7 +321,7 @@ describe('Codex TOML editing and path resolution', () => {
 
     const { getMcpEntry } = await import('../../src/cli/setup.js');
 
-    expect(getMcpEntry()).toEqual(pluginEntry);
+    expect(getMcpEntry()).toEqual(platformPluginEntry);
   });
 
   it('updates command and args while preserving unknown fields and other TOML tables', async () => {

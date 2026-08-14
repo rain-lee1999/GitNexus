@@ -170,12 +170,19 @@ function configuredCliPath() {
 
 /**
  * `CreateProcess` cannot execute a .cmd/.bat file directly. Do not use
- * `shell: true` here: hook arguments include worktree paths and must remain
- * argv values rather than a concatenated shell command. Node performs normal
- * Windows argv quoting for the explicit cmd.exe invocation below.
+ * `shell: true` here. cmd.exe still parses `/c` arguments, so reject command
+ * metacharacters instead of treating Node's argv separation as a safety bound.
  */
 function cliLaunch(command, args, platform = process.platform, comSpec = process.env.ComSpec) {
   if (platform === 'win32' && /\.(?:cmd|bat)$/i.test(command)) {
+    const unsafeValue = [command, ...args].find(
+      (value) => /[&|<>^%!"\r\n]/.test(value) || (/[()]/.test(value) && !/[\t ]/.test(value)),
+    );
+    if (unsafeValue !== undefined) {
+      throw new Error(
+        'Windows command-script launch rejected a path or argument containing cmd.exe metacharacters.',
+      );
+    }
     return {
       command: comSpec || 'cmd.exe',
       args: ['/d', '/s', '/c', command, ...args],
