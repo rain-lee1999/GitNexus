@@ -226,13 +226,22 @@ describe('Codex setup', () => {
   });
 
   it('falls back to direct MCP registration when the plugin CLI is unavailable', async () => {
+    let activeRegistration = registration();
     execFileMock.mockImplementation((...args: any[]) => {
       const cliArgs = args[1] as string[];
       const callback = args.at(-1);
       if (cliArgs[0] === 'plugin') return callback(new Error('unknown command plugin'), '', '');
-      if (cliArgs[0] === 'mcp' && cliArgs[1] === 'add') return callback(null, '', '');
+      if (cliArgs[0] === 'mcp' && cliArgs[1] === 'add') {
+        const separator = cliArgs.indexOf('--');
+        if (separator < 0) throw new Error(`missing MCP command separator: ${cliArgs.join(' ')}`);
+        activeRegistration = registration({
+          command: cliArgs[separator + 1],
+          args: cliArgs.slice(separator + 2),
+        });
+        return callback(null, '', '');
+      }
       if (cliArgs[0] === 'mcp' && cliArgs[1] === 'get') {
-        return callback(null, registration(), '');
+        return callback(null, activeRegistration, '');
       }
       return callback(new Error(`unexpected command: ${cliArgs.join(' ')}`), '', '');
     });

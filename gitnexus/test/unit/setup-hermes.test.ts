@@ -98,9 +98,21 @@ describe('setupCommand Hermes support', () => {
     const { setupCommand } = await import('../../src/cli/setup.js');
     await setupCommand();
 
+    const fallbackEntry =
+      process.platform === 'win32'
+        ? { command: 'cmd', args: ['/c', 'npx', '-y', packageSpecifier, 'mcp'] }
+        : { command: 'npx', args: ['-y', packageSpecifier, 'mcp'] };
     expect(spawnMock).toHaveBeenCalledWith(
       '/usr/local/bin/hermes',
-      ['mcp', 'add', 'gitnexus', '--command', 'npx', '--args', '-y', packageSpecifier, 'mcp'],
+      [
+        'mcp',
+        'add',
+        'gitnexus',
+        '--command',
+        fallbackEntry.command,
+        '--args',
+        ...fallbackEntry.args,
+      ],
       { shell: process.platform === 'win32', stdio: ['pipe', 'pipe', 'pipe'] },
     );
     expect(spawnMock.mock.results[0].value.stdin.end).toHaveBeenCalledWith('Y\n');

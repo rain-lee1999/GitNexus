@@ -76,7 +76,7 @@ describe('worktree refresh coordinator', () => {
       command: comSpec,
       args: ['/d', '/s', '/c', 'C:\\Program Files (x86)\\Serena\\serena.cmd', ...args],
     });
-    expect(resolveSpawnInvocation('C:\\Tools\\gitnexus.bat', args, 'win32')).toEqual({
+    expect(resolveSpawnInvocation('C:\\Tools\\gitnexus.bat', args, 'win32', '')).toEqual({
       command: 'cmd.exe',
       args: ['/d', '/s', '/c', 'C:\\Tools\\gitnexus.bat', ...args],
     });

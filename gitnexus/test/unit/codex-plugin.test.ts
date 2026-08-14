@@ -432,7 +432,7 @@ describe('Codex hook behavior', () => {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
         permissionDecisionReason: expect.stringContaining('freshness could not be verified'),
-        additionalContext: expect.stringContaining('put `gitnexus` on PATH'),
+        additionalContext: expect.stringContaining('did not start or queue a refresh'),
       },
     });
     await expect(stat(path.join(directory, '.gitnexus'))).rejects.toThrow();
