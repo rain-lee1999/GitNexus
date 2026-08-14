@@ -52,5 +52,6 @@ Required before a fork release:
 3. Confirm `package.json`, lockfile, Codex plugin metadata, changelog heading, and release tag agree on one version.
 4. Run the full test/build/typecheck matrix and `npm pack --dry-run`; inspect the tarball file list.
 5. Require cross-platform source-build CI. Node-based package bins must be invoked through their JavaScript entrypoints, not by executing Windows `.cmd` shims with `execFileSync`.
-6. After GitHub PR CI and merge, create an explicit fork GitHub source release. Do not claim npm or container publication.
-7. Install the merged source tarball locally, verify the active package root is not a source link, and repeat the plain-analyze no-agent-asset black box.
+6. Gate resolver suites for declared optional native parsers with `isLanguageAvailable`; parser-supported jobs must still run the complete language suite.
+7. After GitHub PR CI and merge, create an explicit fork GitHub source release. Do not claim npm or container publication.
+8. Install the merged source tarball locally, verify the active package root is not a source link, and repeat the plain-analyze no-agent-asset black box.
