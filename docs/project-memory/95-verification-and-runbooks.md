@@ -8,6 +8,8 @@ owners:
   - repository maintainers
 source_of_truth:
   - gitnexus/package.json
+  - gitnexus/scripts/build.js
+  - gitnexus/scripts/build-bin.js
   - gitnexus/test/
   - .github/workflows/release-candidate.yml
   - .github/workflows/publish.yml
@@ -49,5 +51,6 @@ Required before a fork release:
 2. Verify the event truth table: fork PR/manual dry-run remains available; fork main/tag paths cannot mint RC tags, publish npm packages, push/sign images, or attest artifacts.
 3. Confirm `package.json`, lockfile, Codex plugin metadata, changelog heading, and release tag agree on one version.
 4. Run the full test/build/typecheck matrix and `npm pack --dry-run`; inspect the tarball file list.
-5. After GitHub PR CI and merge, create an explicit fork GitHub source release. Do not claim npm or container publication.
-6. Install the merged source tarball locally, verify the active package root is not a source link, and repeat the plain-analyze no-agent-asset black box.
+5. Require cross-platform source-build CI. Node-based package bins must be invoked through their JavaScript entrypoints, not by executing Windows `.cmd` shims with `execFileSync`.
+6. After GitHub PR CI and merge, create an explicit fork GitHub source release. Do not claim npm or container publication.
+7. Install the merged source tarball locally, verify the active package root is not a source link, and repeat the plain-analyze no-agent-asset black box.

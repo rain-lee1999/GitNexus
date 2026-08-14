@@ -46,7 +46,7 @@ Source, tests, root documentation, packaged skills, and this project-memory tree
 
 ## Tests / Verification
 
-Targeted unit/integration tests, build, typecheck, full-suite coverage, project-memory validation, linked-install validation, and black-box side-effect matrices passed. One pre-existing environment-dependent doctor test still fails when its own fixture clears `PATH`; the base file contains the same condition.
+Targeted unit/integration tests, build, typecheck, full-suite coverage, project-memory validation, linked-install validation, and black-box side-effect matrices passed. The PATH-less doctor fixture now explicitly verifies the expected Codex-CLI failure while preserving its config and skills PASS assertions.
 
 ## Unresolved Questions
 
@@ -62,4 +62,4 @@ Bootstrapped canonical project memory for architecture, protocol, UX, diagnostic
 
 ## Release Candidate
 
-The two independently verified commits were combined for `1.7.0`. Release automation is now fail-closed outside the canonical upstream repository; the fork delivery is explicitly GitHub-source-only. Local actionlint, workflow truth-table checks, typecheck/build, 270/270 test files (7,755 passed, 1 skipped), 1,080-file pack inspection, isolated tarball installation, plain-analyze no-agent-asset black box, and independent release-tail reviews passed. The CLI option-forwarding test now expects doctor to fail when its own fixture deliberately removes Codex from `PATH`, while retaining the project config/skills PASS assertions. Remote PR CI, merge, GitHub release, and post-release active-install readback remain delivery gates.
+The two independently verified commits were combined for `1.7.0`. Release automation is now fail-closed outside the canonical upstream repository; the fork delivery is explicitly GitHub-source-only. Local actionlint, workflow truth-table checks, typecheck/build, 270/270 test files (7,755 passed, 1 skipped before the Windows regression tests were added), 1,081-file pack inspection, isolated tarball installation, plain-analyze no-agent-asset black box, and independent release-tail reviews passed. The CLI option-forwarding test now expects doctor to fail when its own fixture deliberately removes Codex from `PATH`, while retaining the project config/skills PASS assertions. The first Windows PR run exposed direct `execFileSync` execution of a `.cmd` shim; the candidate now resolves TypeScript's JavaScript entrypoint and launches it with Node, with focused tests and the rerun Windows job as the end-to-end gate. Remote PR CI, merge, GitHub release, and post-release active-install readback remain delivery gates.

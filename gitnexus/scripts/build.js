@@ -8,40 +8,24 @@
  *  3. Copy gitnexus-shared/dist → dist/_shared
  *  4. Rewrite bare 'gitnexus-shared' specifiers → relative paths
  */
-import { execFileSync, execSync } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runBin } from './build-bin.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 const SHARED_ROOT = path.resolve(ROOT, '..', 'gitnexus-shared');
 const DIST = path.join(ROOT, 'dist');
 const SHARED_DEST = path.join(DIST, '_shared');
-const BIN_EXT = process.platform === 'win32' ? '.cmd' : '';
-
-function resolveBin(name, cwd) {
-  const candidates = [
-    path.join(cwd, 'node_modules', '.bin', `${name}${BIN_EXT}`),
-    path.join(ROOT, 'node_modules', '.bin', `${name}${BIN_EXT}`),
-  ];
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return name;
-}
-
-function runBin(name, args, cwd) {
-  execFileSync(resolveBin(name, cwd), args, { cwd, stdio: 'inherit', timeout: 120_000 });
-}
-
 // ── 1. Build gitnexus-shared ───────────────────────────────────────
 console.log('[build] compiling gitnexus-shared…');
-runBin('tsc', [], SHARED_ROOT);
+runBin('tsc', [], SHARED_ROOT, ROOT);
 
 // ── 2. Build gitnexus ──────────────────────────────────────────────
 console.log('[build] compiling gitnexus…');
-runBin('tsc', [], ROOT);
+runBin('tsc', [], ROOT, ROOT);
 
 // ── 3. Copy shared dist ────────────────────────────────────────────
 console.log('[build] copying shared module into dist/_shared…');
