@@ -13,7 +13,13 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
 import { createRequire } from 'node:module';
-import { loadMeta, listRegisteredRepos, getStoragePath } from '../storage/repo-manager.js';
+import {
+  loadMeta,
+  listRegisteredRepos,
+  getStoragePath,
+  unregisterRepo,
+  withAnalysisLock,
+} from '../storage/repo-manager.js';
 import {
   executeQuery,
   executePrepared,
@@ -29,7 +35,7 @@ import { hybridSearch } from '../core/search/hybrid-search.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at server startup — crashes on unsupported Node ABI versions (#89)
 import { LocalBackend } from '../mcp/local/local-backend.js';
-import { mountMCPEndpoints } from './mcp-http.js';
+import { isLoopbackHost, mountMCPEndpoints, type MCPHTTPOptions } from './mcp-http.js';
 import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { JobManager } from './analyze-job.js';
@@ -523,7 +529,15 @@ const requestedRepo = (req: express.Request): string | undefined => {
   return undefined;
 };
 
-export const createServer = async (port: number, host: string = '127.0.0.1') => {
+export interface CreateHTTPServerOptions {
+  mcp?: MCPHTTPOptions;
+}
+
+export const createServer = async (
+  port: number,
+  host: string = '127.0.0.1',
+  options: CreateHTTPServerOptions = {},
+) => {
   const app = express();
   app.disable('x-powered-by');
 
@@ -560,7 +574,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Initialize MCP backend (multi-repo, shared across all MCP sessions)
   const backend = new LocalBackend();
   await backend.init();
-  const cleanupMcp = mountMCPEndpoints(app, backend);
+  const cleanupMcp = mountMCPEndpoints(app, backend, {
+    ...options.mcp,
+    remoteAccess: options.mcp?.remoteAccess ?? !isLoopbackHost(host),
+  });
   const jobManager = new JobManager();
 
   // Shared repo lock — prevents concurrent analyze + embed on the same repo path,
@@ -757,7 +774,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      // Acquire repo lock — prevents deleting while analyze/embed is in flight
+      // The in-process lock protects server jobs; the shared worktree lock
+      // below also coordinates this destructive path with CLI/MCP workers.
       const lockKey = getStoragePath(entry.path);
       const lockErr = acquireRepoLock(lockKey);
       if (lockErr) {
@@ -771,9 +789,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           await closeLbug();
         } catch {}
 
-        // 1. Delete the .gitnexus index/storage directory
+        // 1. Delete the .gitnexus index/storage directory under the same
+        // cross-process worktree lock used by analysis/refresh.
         const storagePath = getStoragePath(entry.path);
-        await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
+        await withAnalysisLock(entry.path, async () => {
+          await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
+          await unregisterRepo(entry.path);
+        });
 
         // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/
         const cloneDir = getCloneDir(entry.name);
@@ -786,11 +808,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           /* clone dir may not exist (local repos) */
         }
 
-        // 3. Unregister from the global registry
-        const { unregisterRepo } = await import('../storage/repo-manager.js');
-        await unregisterRepo(entry.path);
-
-        // 4. Reinitialize backend to reflect the removal
+        // 3. Reinitialize backend to reflect the removal
         await backend.init().catch(() => {});
 
         res.json({ deleted: entry.name });

@@ -3,7 +3,12 @@ import fs from 'fs/promises';
 import path from 'path';
 import { describe, it, expect } from 'vitest';
 import { deriveEmbeddingMode } from '../../src/core/embedding-mode.js';
-import { getStoragePaths, saveMeta, type RepoMeta } from '../../src/storage/repo-manager.js';
+import {
+  getStoragePaths,
+  registerRepo,
+  saveMeta,
+  type RepoMeta,
+} from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 describe('run-analyze module', () => {
@@ -20,6 +25,9 @@ describe('run-analyze module', () => {
 
   it('creates .gitnexus/.gitignore on the already-up-to-date fast path (#1233)', async () => {
     const tmpRepo = await createTempDir('gitnexus-run-analyze-fast-path-');
+    const tmpHome = await createTempDir('gitnexus-run-analyze-fast-path-home-');
+    const savedGitnexusHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
     try {
       execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
       execSync('git -c user.name=test -c user.email=test@test commit --allow-empty -m init', {
@@ -53,15 +61,78 @@ describe('run-analyze module', () => {
         fs.readFile(path.join(tmpRepo.dbPath, '.gitnexus', '.gitignore'), 'utf-8'),
       ).resolves.toBe('*\n');
     } finally {
+      if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = savedGitnexusHome;
       await tmpRepo.cleanup();
+      await tmpHome.cleanup();
+    }
+  });
+
+  it('keeps the display name in its result without writing repository agent assets', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-context-name-');
+    const tmpHome = await createTempDir('gitnexus-run-analyze-context-name-home-');
+    const savedGitnexusHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      await fs.writeFile(path.join(tmpRepo.dbPath, 'index.ts'), 'export const value = 1;\n');
+      execSync('git add index.ts', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=test -c user.email=test@test commit -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      const currentCommit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+      const coordinatorAlias = `${path.basename(tmpRepo.dbPath)}-coordinator-1234`;
+      await registerRepo(
+        tmpRepo.dbPath,
+        {
+          repoPath: tmpRepo.dbPath,
+          lastCommit: currentCommit,
+          indexedAt: new Date().toISOString(),
+        },
+        { name: coordinatorAlias },
+      );
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        {},
+        {
+          onProgress: () => {},
+        },
+      );
+
+      const contextName = path.basename(tmpRepo.dbPath);
+      expect(result.repoName).toBe(coordinatorAlias);
+      expect(result.contextName).toBe(contextName);
+      await expect(fs.access(path.join(tmpRepo.dbPath, 'AGENTS.md'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await expect(fs.access(path.join(tmpRepo.dbPath, '.agents', 'skills'))).rejects.toMatchObject(
+        { code: 'ENOENT' },
+      );
+    } finally {
+      if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = savedGitnexusHome;
+      await tmpRepo.cleanup();
+      await tmpHome.cleanup();
     }
   });
 
   it('rebuilds instead of taking the fast path when current metadata has leftover LadybugDB WAL', async () => {
     const tmpRepo = await createTempDir('gitnexus-run-analyze-unhealthy-fast-path-');
+    const tmpHome = await createTempDir('gitnexus-run-analyze-index-only-home-');
+    const savedGitnexusHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
     try {
       execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
       await fs.writeFile(path.join(tmpRepo.dbPath, 'index.ts'), 'export const value = 1;\n');
+      const agentsPath = path.join(tmpRepo.dbPath, 'AGENTS.md');
+      const manualAgents = '# Manual agent instructions\n';
+      await fs.writeFile(agentsPath, manualAgents, 'utf-8');
       execSync('git add index.ts', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
       execSync('git -c user.name=test -c user.email=test@test commit -m init', {
         cwd: tmpRepo.dbPath,
@@ -86,7 +157,7 @@ describe('run-analyze module', () => {
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const result = await runFullAnalysis(
         tmpRepo.dbPath,
-        {},
+        { indexOnly: true },
         {
           onProgress: () => {},
           onLog: (msg) => logs.push(msg),
@@ -96,8 +167,15 @@ describe('run-analyze module', () => {
       expect(result.alreadyUpToDate).toBeUndefined();
       expect(logs.join('\n')).toContain('index health is not OK');
       await expect(fs.stat(`${lbugPath}.wal`)).rejects.toMatchObject({ code: 'ENOENT' });
+      // The automatic refresh mode must be a true index-only operation: no
+      // generated AGENTS block and no repo-scoped skill directory.
+      expect(await fs.readFile(agentsPath, 'utf-8')).toBe(manualAgents);
+      await expect(fs.access(path.join(tmpRepo.dbPath, '.agents', 'skills'))).rejects.toThrow();
     } finally {
+      if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = savedGitnexusHome;
       await tmpRepo.cleanup();
+      await tmpHome.cleanup();
     }
   });
 });
@@ -129,6 +207,14 @@ describe('deriveEmbeddingMode', () => {
     expect(m.forceRegenerateEmbeddings).toBe(true);
     expect(m.shouldGenerateEmbeddings).toBe(true);
     expect(m.preserveExistingEmbeddings).toBe(false);
+    expect(m.shouldLoadCache).toBe(true);
+  });
+
+  it('coordinator refresh suppresses generation even when its graph rebuild is forced', () => {
+    const m = deriveEmbeddingMode({ force: true, suppressEmbeddingGeneration: true }, 500);
+    expect(m.shouldGenerateEmbeddings).toBe(false);
+    expect(m.forceRegenerateEmbeddings).toBe(false);
+    expect(m.preserveExistingEmbeddings).toBe(true);
     expect(m.shouldLoadCache).toBe(true);
   });
 

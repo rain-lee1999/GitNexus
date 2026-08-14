@@ -3,6 +3,10 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { parse as parseJsonc } from 'jsonc-parser';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const packageSpecifier = `gitnexus@${(require('../../package.json') as { version: string }).version}`;
 
 const execFileMock = vi.fn((...args: any[]) => {
   const callback = args.at(-1);
@@ -24,6 +28,7 @@ describe('setupOpenCode — JSONC preservation', () => {
   let tempHome: string;
   let originalHome: string | undefined;
   let originalUserProfile: string | undefined;
+  let originalCodexHome: string | undefined;
   let platformDescriptor: PropertyDescriptor | undefined;
 
   const setPlatform = (value: NodeJS.Platform) => {
@@ -42,9 +47,11 @@ describe('setupOpenCode — JSONC preservation', () => {
 
     originalHome = process.env.HOME;
     originalUserProfile = process.env.USERPROFILE;
+    originalCodexHome = process.env.CODEX_HOME;
     tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-opencode-jsonc-'));
     process.env.HOME = tempHome;
     process.env.USERPROFILE = tempHome;
+    delete process.env.CODEX_HOME;
 
     await fs.mkdir(opencodeDir(), { recursive: true });
 
@@ -62,6 +69,8 @@ describe('setupOpenCode — JSONC preservation', () => {
 
     process.env.HOME = originalHome;
     process.env.USERPROFILE = originalUserProfile;
+    if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = originalCodexHome;
     await fs.rm(tempHome, { recursive: true, force: true });
   });
 
@@ -232,7 +241,7 @@ describe('setupOpenCode — JSONC preservation', () => {
 
     expect(config.mcp.gitnexus).toEqual({
       type: 'local',
-      command: ['npx', '-y', 'gitnexus@latest', 'mcp'],
+      command: ['npx', '-y', packageSpecifier, 'mcp'],
     });
   });
 

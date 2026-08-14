@@ -16,7 +16,11 @@ import {
 } from './schema.js';
 import { streamAllCSVsToDisk } from './csv-generator.js';
 import type { CachedEmbedding } from '../embeddings/types.js';
-import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
+import {
+  extensionManager,
+  type ExtensionEnsureOptions,
+  type ExtensionInstallPolicy,
+} from './extension-loader.js';
 import {
   closeLbugConnection,
   openLbugConnection,
@@ -150,6 +154,32 @@ let conn: lbug.Connection | null = null;
 let currentDbPath: string | null = null;
 let ftsLoaded = false;
 let vectorExtensionLoaded = false;
+// A writable LadybugDB session is shared by every analysis phase. Retain the
+// analysis-selected extension policy for that session so later FTS/vector
+// helpers cannot accidentally fall back to `auto` after init already chose
+// `load-only`. Resetting this in closeLbug keeps ordinary direct analyses at
+// the ExtensionManager's existing auto default.
+let activeExtensionInstallPolicy: ExtensionInstallPolicy | undefined;
+
+/** Options governing a writable LadybugDB initialization lifecycle. */
+export interface LbugInitOptions {
+  /** Optional extension policy for this database session. */
+  extensionInstallPolicy?: ExtensionInstallPolicy;
+}
+
+const withActiveExtensionInstallPolicy = (opts: ExtensionEnsureOptions): ExtensionEnsureOptions => {
+  const activePolicy = activeExtensionInstallPolicy;
+  if (activePolicy === undefined) return opts;
+
+  // The policy selected by initLbug is a ceiling, not merely a default. A
+  // coordinator that opened this writable session as load-only must not be
+  // upgraded to auto by a later helper. A caller may still choose the stricter
+  // `never` policy for a single operation.
+  if (activePolicy === 'never' || opts.policy !== 'never') {
+    return { ...opts, policy: activePolicy };
+  }
+  return opts;
+};
 
 /**
  * In-process cache of FTS indexes observed against the current singleton
@@ -229,8 +259,8 @@ const runWithSessionLock = async <T>(operation: () => Promise<T>): Promise<T> =>
 
 const normalizeCopyPath = (filePath: string): string => filePath.replace(/\\/g, '/');
 
-export const initLbug = async (dbPath: string) => {
-  return runWithSessionLock(() => ensureLbugInitialized(dbPath));
+export const initLbug = async (dbPath: string, options: LbugInitOptions = {}) => {
+  return runWithSessionLock(() => ensureLbugInitialized(dbPath, options));
 };
 
 /**
@@ -272,6 +302,7 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
         currentDbPath = null;
         ftsLoaded = false;
         vectorExtensionLoaded = false;
+        activeExtensionInstallPolicy = undefined;
         ensuredFTSIndexes.clear();
       });
       // Sleep outside the lock — no need to block others while waiting
@@ -283,15 +314,18 @@ export const withLbugDb = async <T>(dbPath: string, operation: () => Promise<T>)
   throw lastError;
 };
 
-const ensureLbugInitialized = async (dbPath: string) => {
+const ensureLbugInitialized = async (dbPath: string, options: LbugInitOptions = {}) => {
   if (conn && currentDbPath === dbPath) {
+    // Session policy is selected when the DB opens and remains immutable until
+    // closeLbug(). In particular, a later helper cannot relax a coordinator's
+    // load-only boundary to auto while it is rebuilding this worktree.
     return { db, conn };
   }
-  await doInitLbug(dbPath);
+  await doInitLbug(dbPath, options);
   return { db, conn };
 };
 
-const doInitLbug = async (dbPath: string) => {
+const doInitLbug = async (dbPath: string, options: LbugInitOptions = {}) => {
   // Different database requested — close the old one first
   if (conn || db) {
     try {
@@ -305,6 +339,7 @@ const doInitLbug = async (dbPath: string) => {
     currentDbPath = null;
     ftsLoaded = false;
     vectorExtensionLoaded = false;
+    activeExtensionInstallPolicy = undefined;
     ensuredFTSIndexes.clear();
   }
 
@@ -341,6 +376,7 @@ const doInitLbug = async (dbPath: string) => {
   const opened = await openLbugConnection(lbug, dbPath);
   db = opened.db;
   conn = opened.conn;
+  activeExtensionInstallPolicy = options.extensionInstallPolicy;
 
   for (const schemaQuery of SCHEMA_QUERIES) {
     try {
@@ -1063,6 +1099,7 @@ export const closeLbug = async (): Promise<void> => {
   currentDbPath = null;
   ftsLoaded = false;
   vectorExtensionLoaded = false;
+  activeExtensionInstallPolicy = undefined;
   ensuredFTSIndexes.clear();
 };
 
@@ -1171,7 +1208,12 @@ export const loadFTSExtension = async (
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
 
-  const loaded = await extensionManager.ensure((sql) => c.query(sql), 'fts', 'FTS', opts);
+  const loaded = await extensionManager.ensure(
+    (sql) => c.query(sql),
+    'fts',
+    'FTS',
+    useModuleState ? withActiveExtensionInstallPolicy(opts) : opts,
+  );
   if (loaded && useModuleState) ftsLoaded = true;
   return loaded;
 };
@@ -1194,7 +1236,12 @@ export const loadVectorExtension = async (
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
 
-  const loaded = await extensionManager.ensure((sql) => c.query(sql), 'VECTOR', 'VECTOR', opts);
+  const loaded = await extensionManager.ensure(
+    (sql) => c.query(sql),
+    'VECTOR',
+    'VECTOR',
+    useModuleState ? withActiveExtensionInstallPolicy(opts) : opts,
+  );
   if (loaded && useModuleState) vectorExtensionLoaded = true;
   return loaded;
 };

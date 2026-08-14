@@ -5,17 +5,9 @@ on:
     tags:
       - 'v*'
   pull_request:
-  # workflow_dispatch is allowed for dry-run testing only. Publishing is still
-  # exclusively tag-driven so that every signed image corresponds 1:1 to a
-  # published `gitnexus@X.Y.Z` on npm. dry_run:true (the default) skips all
-  # push, sign, and attestation steps — the build runs but nothing is published.
+  # Manual dispatch is always build-only. Registry publication requires either
+  # a real v* tag push or a required tag supplied by the RC reusable caller.
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 'Build only — skip push, signing, and attestations'
-        required: false
-        default: true
-        type: boolean
   workflow_call:
     inputs:
       tag:
@@ -40,6 +32,10 @@ concurrency:
 
 jobs:
   build-push:
+    # Forks retain PR builds and manual dry-runs, while tag/reusable publish
+    # paths remain exclusive to the canonical repository whose identities and
+    # registry credentials are documented below.
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.repository == 'abhigyanpatwari/GitNexus'
     name: Build & Push ${{ matrix.image.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -69,20 +65,17 @@ jobs:
             slug: gitnexus
 
     steps:
-      # Only the workflow_call path requires a non-empty `inputs.tag` — callers
-      # (e.g. release-candidate.yml) must pass the RC tag explicitly. On direct
-      # tag pushes the tag comes from `github.ref`, so `inputs.tag` is always
-      # empty and validating it here would break every real release (#1064).
-      # The downstream "Verify tag matches gitnexus/package.json version" step
-      # handles both event types by falling back to GITHUB_REF.
-      - name: Validate tag input
-        if: github.event_name == 'workflow_call'
+      # Reusable callers are identified by the required input, not by
+      # github.event_name: reusable workflows inherit the caller's event.
+      # Direct tag pushes leave inputs.tag empty and use github.ref below.
+      - name: Validate reusable tag input
+        if: inputs.tag != ''
         shell: bash
         env:
           TAG_INPUT: ${{ inputs.tag }}
         run: |
-          if [ -z "${TAG_INPUT}" ]; then
-            echo "::error::No tag provided to docker.yml — refusing to build/push."
+          if ! [[ "$TAG_INPUT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "::error::Reusable Docker tag is not valid semver: $TAG_INPUT"
             exit 1
           fi
 
@@ -100,7 +93,7 @@ jobs:
       # `gitnexus@X.Y.Z` published to npm — no drift, no surprises.
       - name: Verify tag matches gitnexus/package.json version
         id: version
-        if: github.event_name != 'workflow_dispatch' && github.event_name != 'pull_request'
+        if: inputs.tag != '' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
         shell: bash
         env:
           # For workflow_call the tag comes from the caller input; for push events
@@ -135,7 +128,7 @@ jobs:
         uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
 
       - name: Log in to GitHub Container Registry
-        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+        if: ${{ github.repository == 'abhigyanpatwari/GitNexus' && (inputs.tag != '' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))) }}
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           registry: ghcr.io
@@ -150,7 +143,7 @@ jobs:
       # access token, NOT the account password) with write access to the
       # `akonlabs/gitnexus` and `akonlabs/gitnexus-web` repos.
       - name: Log in to Docker Hub
-        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+        if: ${{ github.repository == 'abhigyanpatwari/GitNexus' && (inputs.tag != '' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))) }}
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -202,7 +195,7 @@ jobs:
           context: .
           file: ${{ matrix.image.dockerfile }}
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+          push: ${{ github.repository == 'abhigyanpatwari/GitNexus' && (inputs.tag != '' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))) }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.image.slug }}
@@ -221,7 +214,7 @@ jobs:
       # Do NOT relax to `@.*` — that accepts signatures from any ref, including
       # unprotected branches and PRs, and defeats the supply-chain guarantee.
       - name: Sign image with Cosign (keyless)
-        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+        if: ${{ github.repository == 'abhigyanpatwari/GitNexus' && (inputs.tag != '' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))) }}
         env:
           # Cosign v2 (installed by sigstore/cosign-installer above) makes
           # keyless the default. COSIGN_EXPERIMENTAL is a v1-only opt-in flag
@@ -243,7 +236,7 @@ jobs:
       # is identical across registries (same build, same push), so consumers
       # pulling from either GHCR or Docker Hub see the same provenance.
       - name: Generate build provenance attestation (GHCR)
-        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+        if: ${{ github.repository == 'abhigyanpatwari/GitNexus' && (inputs.tag != '' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))) }}
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
           subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.slug }}
@@ -251,7 +244,7 @@ jobs:
           push-to-registry: true
 
       - name: Generate build provenance attestation (Docker Hub)
-        if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
+        if: ${{ github.repository == 'abhigyanpatwari/GitNexus' && (inputs.tag != '' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))) }}
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
           subject-name: docker.io/akonlabs/${{ matrix.image.slug }}

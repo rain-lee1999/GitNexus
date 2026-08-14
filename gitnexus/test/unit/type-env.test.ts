@@ -18,9 +18,13 @@ import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import Python from 'tree-sitter-python';
 import CPP from 'tree-sitter-cpp';
-import Kotlin from 'tree-sitter-kotlin';
 import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
+import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import {
+  getLanguageGrammar,
+  isLanguageAvailable,
+} from '../../src/core/tree-sitter/parser-loader.js';
 
 let Dart: unknown;
 try {
@@ -39,6 +43,9 @@ try {
 } catch {
   Swift = null;
 }
+
+const kotlinAvailable = isLanguageAvailable(SupportedLanguages.Kotlin);
+const Kotlin = kotlinAvailable ? getLanguageGrammar(SupportedLanguages.Kotlin) : null;
 
 const parser = new Parser();
 
@@ -61,6 +68,8 @@ const parseSwift = (code: string) => {
 
 const describeDart = Dart ? describe : describe.skip;
 const describeSwift = Swift ? describe : describe.skip;
+const describeKotlin = describe.skipIf(!kotlinAvailable);
+const itKotlin = it.skipIf(!kotlinAvailable);
 
 /** Flatten a scoped TypeEnvironment into a simple name→type map (for simple test assertions). */
 function flatGet(typeEnv: TypeEnvironment, varName: string): string | undefined {
@@ -997,7 +1006,7 @@ class Standalone {
     });
   });
 
-  describe('Kotlin object_declaration this resolution', () => {
+  describeKotlin('Kotlin object_declaration this resolution', () => {
     it('resolves this inside object declaration', () => {
       const code = `
 object AppConfig {
@@ -1989,7 +1998,7 @@ class RepoService {
       });
     });
 
-    describe('Kotlin constructor inference', () => {
+    describeKotlin('Kotlin constructor inference', () => {
       it('still extracts explicit type annotations', () => {
         const tree = parse(
           `
@@ -2863,7 +2872,7 @@ class User : BaseModel<string> {
   });
 
   describe('constructorBindings merged into buildTypeEnv', () => {
-    it('returns constructor bindings for Kotlin val x = UnknownClass()', () => {
+    itKotlin('returns constructor bindings for Kotlin val x = UnknownClass()', () => {
       const tree = parse(
         `
         fun main() {
@@ -2880,7 +2889,7 @@ class User : BaseModel<string> {
       expect(typeEnv.constructorBindings[0].calleeName).toBe('UnknownClass');
     });
 
-    it('does NOT emit constructor binding when TypeEnv already resolved', () => {
+    itKotlin('does NOT emit constructor binding when TypeEnv already resolved', () => {
       const tree = parse(
         `
         fun main() {
@@ -3011,7 +3020,7 @@ svc = App::Models::Service.new
       expect(typeEnv.constructorBindings[0].calleeName).toBe('Service');
     });
 
-    it('includes scope key in constructor bindings', () => {
+    itKotlin('includes scope key in constructor bindings', () => {
       const tree = parse(
         `
         fun process() {
@@ -3406,7 +3415,7 @@ svc = App::Models::Service.new
     });
   });
 
-  describe('assignment chain — Kotlin property_declaration', () => {
+  describeKotlin('assignment chain — Kotlin property_declaration', () => {
     it('propagates val alias = u when u has an explicit type annotation', () => {
       const tree = parse(
         `
@@ -4088,7 +4097,7 @@ class Foo {
     });
   });
 
-  describe('for-loop element type inference (Tier 1c) — Kotlin', () => {
+  describeKotlin('for-loop element type inference (Tier 1c) — Kotlin', () => {
     it('infers loop variable from unannotated for with List<User> parameter', () => {
       const tree = parse(
         `
@@ -4555,7 +4564,7 @@ end
     });
   });
 
-  describe('Kotlin when/is pattern binding (Phase 6)', () => {
+  describeKotlin('Kotlin when/is pattern binding (Phase 6)', () => {
     it('when (x) { is User -> } binds x to User', () => {
       const tree = parse(
         `
@@ -4607,7 +4616,7 @@ fun process() {
     });
   });
 
-  describe('Kotlin for-loop HashMap.values resolution (Phase 6)', () => {
+  describeKotlin('Kotlin for-loop HashMap.values resolution (Phase 6)', () => {
     it('for (user in data.values) binds user to User via HashMap<String, User>', () => {
       const tree = parse(
         `
@@ -4731,7 +4740,7 @@ public class App {
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
-    it('MutableMap<String, User>.values() resolves to User via descriptor (arity 2)', () => {
+    itKotlin('MutableMap<String, User>.values() resolves to User via descriptor (arity 2)', () => {
       const tree = parse(
         `
 fun process(data: MutableMap<String, User>) {
@@ -4746,7 +4755,7 @@ fun process(data: MutableMap<String, User>) {
       expect(flatGet(typeEnv, 'user')).toBe('User');
     });
 
-    it('MutableList<User> resolves element type via descriptor', () => {
+    itKotlin('MutableList<User> resolves element type via descriptor', () => {
       const tree = parse(
         `
 fun process(users: MutableList<User>) {
@@ -5197,7 +5206,7 @@ function process(x) {
       expect(flatGet(typeEnv, 'x')).toBe('User');
     });
 
-    it('Kotlin: if (x != null) narrows nullable type inside if-body', () => {
+    itKotlin('Kotlin: if (x != null) narrows nullable type inside if-body', () => {
       const code = `
 fun process(x: User?) {
     if (x != null) {
@@ -5210,7 +5219,7 @@ fun process(x: User?) {
       expect(typeEnv.lookup('x', saveCall)).toBe('User');
     });
 
-    it('Kotlin: when/is still works alongside null-check narrowing', () => {
+    itKotlin('Kotlin: when/is still works alongside null-check narrowing', () => {
       const tree = parse(
         `
 fun process(x: Any) {

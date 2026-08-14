@@ -1,6 +1,6 @@
 {
   "name": "gitnexus",
-  "version": "1.6.3",
+  "version": "1.7.0",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -32,6 +32,7 @@
   },
   "files": [
     "dist",
+    "codex-plugin",
     "hooks",
     "scripts",
     "skills",
@@ -47,9 +48,10 @@
     "test:integration": "vitest run test/integration",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "version": "node scripts/sync-codex-plugin-version.cjs --stage",
     "postinstall": "node scripts/build-tree-sitter-dart.cjs && node scripts/build-tree-sitter-proto.cjs",
     "prepare": "node scripts/build.js",
-    "prepack": "node scripts/build.js"
+    "prepack": "node scripts/sync-codex-plugin-version.cjs --check && node scripts/build.js"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.1.0",

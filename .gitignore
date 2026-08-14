@@ -95,7 +95,6 @@ gitnexus/vendor/**/node_modules/
 .claude/commands/
 .claude/helpers
 .claude/skills/
-!.claude/skills/gitnexus/
 
 .history/
 
@@ -103,8 +102,19 @@ gitnexus/vendor/**/node_modules/
 
 local_docs/
 
-# Local agent scratch / review prompts (never commit)
+# Local agent scratch / review prompts. Keep the seven canonical GitNexus
+# repo skills versioned for native Codex discovery; generated area skills stay local.
 .tmp/
-.agents/
+/.agents/*
+!/.agents/skills/
+/.agents/skills/*
+!/.agents/skills/.gitnexus-managed-commit
+!/.agents/skills/gitnexus-cli/
+!/.agents/skills/gitnexus-debugging/
+!/.agents/skills/gitnexus-exploring/
+!/.agents/skills/gitnexus-guide/
+!/.agents/skills/gitnexus-impact-analysis/
+!/.agents/skills/gitnexus-pr-review/
+!/.agents/skills/gitnexus-refactoring/
 .context/
 gitnexus/web/

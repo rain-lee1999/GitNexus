@@ -6,7 +6,7 @@ import fs from 'fs';
 
 describe('--skip-git CLI flag', () => {
   it('Commander maps --skip-git to options.skipGit (not --no-git inversion)', () => {
-    // Verify the CLI defines --skip-git and --skip-agents-md in analyze help.
+    // Verify the CLI defines --skip-git, --index-only, and --skip-agents-md in analyze help.
     const helpOutput = execSync('node dist/cli/index.js analyze --help', {
       cwd: path.resolve(__dirname, '../..'),
       encoding: 'utf8',
@@ -14,6 +14,7 @@ describe('--skip-git CLI flag', () => {
     });
 
     expect(helpOutput).toContain('--skip-git');
+    expect(helpOutput).toContain('--index-only');
     expect(helpOutput).toContain('--skip-agents-md');
     expect(helpOutput).not.toContain('--no-git');
   });
@@ -160,7 +161,7 @@ describe('--skip-git CLI flag', () => {
       }
     });
 
-    it('keeps parent git status clean for --skip-git subdir analyze (#1233)', () => {
+    it('leaves checkout agent assets unchanged for --skip-git subdir analyze (#1233)', () => {
       createTestStructure();
       try {
         fs.writeFileSync(path.join(parentDir, '.gitignore'), '.claude/\n');
@@ -184,7 +185,10 @@ describe('--skip-git CLI flag', () => {
           cwd: parentDir,
           encoding: 'utf8',
         });
+        // Safe-by-default analysis only writes ignored GitNexus index state.
         expect(status).toBe('');
+        expect(fs.existsSync(path.join(parentDir, 'COOLIO', 'AGENTS.md'))).toBe(false);
+        expect(fs.existsSync(path.join(parentDir, 'COOLIO', '.agents'))).toBe(false);
       } finally {
         cleanup();
       }

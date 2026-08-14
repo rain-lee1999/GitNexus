@@ -11,7 +11,7 @@ This guide is for teams whose product lives in **several separate Git repositori
 - Sync-time extractors walk each member repo and emit **contracts** — provider or consumer records keyed by a canonical `contractId` (`grpc::auth.AuthService/Login`, `http::GET::/orders`, etc.).
 - The sync step matches providers and consumers that share a `contractId` and writes **cross-links** to `<groupDir>/contracts.json`. Those cross-links are what lets `impact({repo: "@<group>", target: "X"})` hop from one repo into another.
 - Contracts come from three places: automatic contract extractors (`grpc-extractor`, `http-route-extractor`, `topic-extractor`), a manifest escape hatch (`config.links` in `group.yaml`), and — for same-name symbol matches where no contract is declared — the exact-match matching cascade in [`matching.ts`](../../gitnexus/src/core/group/matching.ts).
-- Each repo stays editable and re-indexable on its own. Re-run `gitnexus analyze` in a repo when it changes, then `gitnexus group sync <group>` to refresh `contracts.json`. `gitnexus group status` reports which members are stale.
+- Each repo stays editable and re-indexable on its own. Initialize each worktree once with `gitnexus refresh init --path <absolute-worktree> --install-git-hooks`; after changes, run `gitnexus refresh ensure --path <absolute-worktree>`, then `gitnexus group sync <group>` to refresh `contracts.json`. `gitnexus group status` reports which members are stale.
 
 ## Prerequisites
 
@@ -139,7 +139,10 @@ A shortened response:
       "type": "grpc",
       "role": "provider",
       "repo": "orders",
-      "symbolRef": { "filePath": "internal/grpc/order_server.go", "name": "RegisterOrderServiceServer" },
+      "symbolRef": {
+        "filePath": "internal/grpc/order_server.go",
+        "name": "RegisterOrderServiceServer"
+      },
       "confidence": 0.8,
       "meta": { "service": "OrderService", "method": "PlaceOrder", "source": "go_register" }
     },
@@ -155,8 +158,19 @@ A shortened response:
   ],
   "crossLinks": [
     {
-      "from": { "repo": "gateway", "symbolUid": "…", "symbolRef": { "filePath": "src/clients/orders.ts", "name": "OrderServiceClient" } },
-      "to":   { "repo": "orders",  "symbolUid": "…", "symbolRef": { "filePath": "internal/grpc/order_server.go", "name": "RegisterOrderServiceServer" } },
+      "from": {
+        "repo": "gateway",
+        "symbolUid": "…",
+        "symbolRef": { "filePath": "src/clients/orders.ts", "name": "OrderServiceClient" }
+      },
+      "to": {
+        "repo": "orders",
+        "symbolUid": "…",
+        "symbolRef": {
+          "filePath": "internal/grpc/order_server.go",
+          "name": "RegisterOrderServiceServer"
+        }
+      },
       "type": "grpc",
       "contractId": "grpc::orders.OrderService/PlaceOrder",
       "matchType": "exact",
@@ -175,19 +189,25 @@ From any shell (you do **not** have to `cd` into a member repo), the normal `imp
 Example MCP calls:
 
 ```json
-{"tool": "impact", "arguments": {
-  "repo": "@payments-platform/orders",
-  "target": "PlaceOrder",
-  "direction": "upstream",
-  "crossDepth": 2
-}}
+{
+  "tool": "impact",
+  "arguments": {
+    "repo": "@payments-platform/orders",
+    "target": "PlaceOrder",
+    "direction": "upstream",
+    "crossDepth": 2
+  }
+}
 ```
 
 ```json
-{"tool": "query", "arguments": {
-  "repo": "@payments-platform",
-  "query": "retry logic around PlaceOrder"
-}}
+{
+  "tool": "query",
+  "arguments": {
+    "repo": "@payments-platform",
+    "query": "retry logic around PlaceOrder"
+  }
+}
 ```
 
 The CLI equivalents still exist for scripting:
@@ -206,12 +226,12 @@ Phase 1 walks within the anchor member; Phase 2 hops across the Contract Bridge 
 1. **Proto map.** Every `**/*.proto` file is parsed to enumerate `service Foo { rpc Bar(...) }` blocks and (transitively) resolve the package name. Each RPC method becomes a provider contract with `contractId = grpc::<package>.<Service>/<Method>` and `confidence = 0.85`. Parsing uses the vendored `tree-sitter-proto` grammar when available and falls back to a length-preserving manual parser (`extractServiceBlocks`) otherwise, so `.proto` extraction works on platforms where the grammar fails to build.
 2. **Source scan.** Every source file whose extension matches [`GRPC_SCAN_GLOB`](../../gitnexus/src/core/group/extractors/grpc-patterns/index.ts) is parsed by its language plugin:
 
-| Language | Provider signal | Consumer signal |
-|----------|-----------------|-----------------|
-| Go ([`go.ts`](../../gitnexus/src/core/group/extractors/grpc-patterns/go.ts)) | `pb.RegisterXxxServer(...)`, `pb.UnimplementedXxxServer` embedded in struct | `pb.NewXxxClient(conn)` |
-| Java ([`java.ts`](../../gitnexus/src/core/group/extractors/grpc-patterns/java.ts)) | `extends XxxServiceGrpc.XxxServiceImplBase` (with or without `@GrpcService`) | `XxxServiceGrpc.newBlockingStub(...)`, `newStub(...)` |
-| Python ([`python.ts`](../../gitnexus/src/core/group/extractors/grpc-patterns/python.ts)) | `add_XxxServicer_to_server(...)` (bare or `_pb2_grpc.` attribute form) | `XxxStub(channel)` (ignores `Mock`/`Test`/`Fake`/`Stub`) |
-| Node / TS ([`node.ts`](../../gitnexus/src/core/group/extractors/grpc-patterns/node.ts)) | NestJS `@GrpcMethod('Service','Method')` | `@GrpcClient` field typed `XxxServiceClient`, `client.getService<X>('Service')`, `new XxxServiceClient(...)`, `new foo.bar.XxxService(...)` in files that call `loadPackageDefinition` |
+| Language                                                                                 | Provider signal                                                              | Consumer signal                                                                                                                                                                        |
+| ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Go ([`go.ts`](../../gitnexus/src/core/group/extractors/grpc-patterns/go.ts))             | `pb.RegisterXxxServer(...)`, `pb.UnimplementedXxxServer` embedded in struct  | `pb.NewXxxClient(conn)`                                                                                                                                                                |
+| Java ([`java.ts`](../../gitnexus/src/core/group/extractors/grpc-patterns/java.ts))       | `extends XxxServiceGrpc.XxxServiceImplBase` (with or without `@GrpcService`) | `XxxServiceGrpc.newBlockingStub(...)`, `newStub(...)`                                                                                                                                  |
+| Python ([`python.ts`](../../gitnexus/src/core/group/extractors/grpc-patterns/python.ts)) | `add_XxxServicer_to_server(...)` (bare or `_pb2_grpc.` attribute form)       | `XxxStub(channel)` (ignores `Mock`/`Test`/`Fake`/`Stub`)                                                                                                                               |
+| Node / TS ([`node.ts`](../../gitnexus/src/core/group/extractors/grpc-patterns/node.ts))  | NestJS `@GrpcMethod('Service','Method')`                                     | `@GrpcClient` field typed `XxxServiceClient`, `client.getService<X>('Service')`, `new XxxServiceClient(...)`, `new foo.bar.XxxService(...)` in files that call `loadPackageDefinition` |
 
 For each source-scan detection the extractor looks up the short service name in the proto map and picks:
 
@@ -286,7 +306,7 @@ History: the manifest extractor used to be silently skipped by the sync pipeline
 2. **A known provider/consumer pair doesn't cross-link.** Most common cause: the package segment differs. Check the raw contract ids with `gitnexus group contracts <name> --unmatched` — if you see two same-method contracts with different package prefixes, add a manifest `links:` entry to bridge them (no automatic rewrite rules yet).
 3. **`matchType: "manifest"` is missing entirely.** The extractor needs `config.links` to be non-empty and the sync pipeline to actually call it — verify you're on a post-#827 build. Empty contract rows for manifest links usually mean `resolveSymbol` couldn't find a graph match; the synthetic uid still lets cross-impact work, it just won't carry a file path.
 4. **Ambiguous proto warnings.** Look for `[grpc-extractor] Ambiguous proto resolution` in the sync logs; that means a service name exists in multiple `.proto` files under the same repo and the path-distance heuristic couldn't pick a winner. Resolve by renaming the service or declaring the intended pairing in `config.links`.
-5. **Cross-impact says "stale".** Both sides need a fresh per-repo index _and_ a fresh group sync. Order matters: `gitnexus analyze` in each changed repo, then `gitnexus group sync <name>`. Use `gitnexus group status <name>` to see which side is behind.
+5. **Cross-impact says "stale".** Both sides need a fresh per-repo index _and_ a fresh group sync. Order matters: `gitnexus refresh ensure --path <absolute-worktree>` in each changed worktree, then `gitnexus group sync <name>`. Use `gitnexus group status <name>` to see which side is behind.
 
 ## Related docs and references
 

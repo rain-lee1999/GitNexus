@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { execSync } from 'child_process';
 import fs from 'fs/promises';
-import path from 'path';
 import { statusCommand } from '../../src/cli/status.js';
 import { getStoragePaths, saveMeta, type RepoMeta } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
@@ -56,7 +55,10 @@ describe('statusCommand index health warnings', () => {
     expect(output).toContain('lbug.wal');
     expect(output).not.toContain('Status: ✅ up-to-date');
     expect(output).toContain('Run: gitnexus analyze --embeddings');
-    expect(output).toContain('Fallback if analyze still fails: gitnexus clean --force && gitnexus analyze --embeddings');
+    expect(output).not.toContain('gitnexus agent-context plan');
+    expect(output).toContain(
+      'Fallback if analyze still fails: gitnexus clean --force && gitnexus analyze --embeddings',
+    );
   });
 
   it('reports up-to-date when metadata is current and no LadybugDB sidecars remain', async () => {

@@ -15,7 +15,9 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
 
 ## End-to-end flow: index → graph → tools
 
-1. **Ingestion** — `analyze.ts` → `runFullAnalysis` (`run-analyze.ts`) → `runPipelineFromRepo` (`pipeline.ts`). DAG of 12 phases builds a `KnowledgeGraph` in memory, then loads into LadybugDB under `.gitnexus/`. Repo registered in `~/.gitnexus/registry.json` for MCP discovery.
+1. **Ingestion** — `analyze.ts` → `runFullAnalysis` (`run-analyze.ts`) → `runPipelineFromRepo` (`pipeline.ts`). DAG of 12 phases builds a `KnowledgeGraph` in memory, then loads it into LadybugDB under `.gitnexus/`. The repo is registered in `~/.gitnexus/registry.json` for MCP discovery. This path owns graph/index state only and never writes `AGENTS.md` or `.agents/skills/`.
+
+1a. **Agent context** — the independent `agent-context plan/apply` command owns tracked repo context. `agent-context-plan.ts` stages the desired assets outside the repository and computes a content-addressed diff; `agent-context-apply.ts` validates the reviewed before/after snapshot, rejects symlink or concurrent-edit conflicts, and writes under the worktree analysis lock. Fixed skill freshness uses a bundled-content fingerprint; only repo-specific generated skills use source-commit freshness.
 
 2. **Persistence** — `repo-manager.ts` (paths, registry, KuzuDB cleanup). `lbug-adapter.ts` (graph load, queries, embedding batches).
 
@@ -56,6 +58,7 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
 | Concern | Start in |
 |---------|----------|
 | CLI commands/flags | `src/cli/` (`index.ts`, per-command modules) |
+| Repo-local agent context | `src/cli/agent-context.ts`, `agent-context-plan.ts`, `agent-context-apply.ts`, `ai-context.ts` |
 | Parsing/graph construction | `src/core/ingestion/pipeline-phases/` + `pipeline.ts` |
 | Graph schema/DB | `src/core/lbug/` (`schema.ts`, `lbug-adapter.ts`) |
 | MCP tools/resources | `src/mcp/server.ts`, `tools.ts`, `resources.ts` |

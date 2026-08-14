@@ -15,7 +15,12 @@ export const isGitRepo = (repoPath: string): boolean => {
 
 export const getCurrentCommit = (repoPath: string): string => {
   try {
-    return execSync('git rev-parse HEAD', { cwd: repoPath }).toString().trim();
+    // An initialized-but-unborn repository has no HEAD. This is an ordinary
+    // coordinator status rather than a user-facing Git failure, so keep its
+    // JSON/stdout contract clean by suppressing Git's diagnostic.
+    return execSync('git rev-parse HEAD', { cwd: repoPath, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim();
   } catch {
     return '';
   }

@@ -17,6 +17,8 @@ program.name('gitnexus').description('GitNexus local CLI and MCP server').versio
 program
   .command('setup')
   .description('One-time setup: configure MCP for Cursor, Claude Code, OpenCode, Codex, Hermes')
+  .option('--codex-scope <scope>', 'Codex setup scope: user or project', 'user')
+  .option('--project-root <path>', 'Project root for --codex-scope project (default: cwd)')
   .action(createLazyAction(() => import('./setup.js'), 'setupCommand'));
 
 program
@@ -30,7 +32,7 @@ program
 
 program
   .command('analyze [path]')
-  .description('Index a repository (full analysis)')
+  .description('Index a repository without writing AGENTS.md or .agents/skills')
   .option('-f, --force', 'Force full re-index even if up to date')
   .option('--embeddings', 'Enable embedding generation for semantic search (off by default)')
   .option(
@@ -38,9 +40,16 @@ program
     'Drop existing embeddings on rebuild. By default, an `analyze` without `--embeddings` ' +
       'preserves any embeddings already present in the index.',
   )
-  .option('--skills', 'Generate repo-specific skill files from detected communities')
-  .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
-  .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
+  .option(
+    '--skills',
+    'Legacy explicit write path: generate repo skills and refresh AGENTS.md/.agents/skills',
+  )
+  .option(
+    '--index-only',
+    'Deprecated compatibility alias; default analyze already leaves agent assets unchanged',
+  )
+  .option('--skip-agents-md', 'Legacy --skills only: leave AGENTS.md unchanged')
+  .option('--no-stats', 'Deprecated compatibility option; tracked context always omits stats')
   .option(
     '--skip-git',
     'Treat the provided path/cwd as the index root and skip parent git-root discovery',
@@ -83,6 +92,44 @@ program
   .action(createLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
 
 program
+  .command('agent-context <action>')
+  .description('Plan or explicitly apply repo-local AGENTS.md and managed skill changes')
+  .requiredOption(
+    '--path <absolute-worktree>',
+    'Absolute Git worktree root (never inferred from cwd)',
+  )
+  .option('--name <display-name>', 'Display name used in generated repository context')
+  .option('--expect <plan-id>', 'Required for apply; refuse if the reviewed plan has changed')
+  .option('--json', 'Emit the plan or apply result as JSON')
+  .addHelpText(
+    'after',
+    '\nActions:\n  plan   Read-only diff; writes no repository files\n  apply  Explicitly write the current reviewed assets\n',
+  )
+  .action(createLazyAction(() => import('./agent-context.js'), 'agentContextCommand'));
+
+program
+  .command('refresh <action>')
+  .description('Inspect or coordinate worktree-safe index-only graph refreshes')
+  .requiredOption(
+    '--path <absolute-worktree>',
+    'Absolute Git worktree root (never inferred from cwd)',
+  )
+  .option('--alias <alias>', 'Stable unique registry alias for this worktree')
+  .option('--reason <reason>', 'Stale-marker reason (used by Git/Codex hooks)')
+  .option('-f, --force', 'Force an index-only rebuild even when HEAD has not changed')
+  .option('--install-git-hooks', 'Install GitNexus-managed post-Git stale markers when safe')
+  .option('--with-serena', 'Initialize/prewarm Serena for this worktree under a global Serena lock')
+  .option('--serena-bin <path>', 'Absolute Serena executable path for --with-serena')
+  .option(
+    '--serena-language <language>',
+    'Serena LSP language id for --with-serena; repeat for multiple languages',
+    (language: string, previous: string[] = []) => [...previous, language],
+    [],
+  )
+  .option('--json', 'Emit machine-readable refresh status or write plan JSON')
+  .action(createLazyAction(() => import('./refresh.js'), 'refreshCommand'));
+
+program
   .command('index [path...]')
   .description(
     'Register an existing .gitnexus/ folder into the global registry (no re-analysis needed)',
@@ -113,10 +160,17 @@ program
   .description('Show index status for current repo')
   .action(createLazyAction(() => import('./status.js'), 'statusCommand'));
 
-program
-  .command('doctor')
+const doctor = program
+  .command('doctor [target]')
   .description('Show runtime platform capabilities and embedding configuration')
+  .option('--codex-scope <scope>', 'Codex scope to inspect: user or project', 'user')
+  .option('--project-root <path>', 'Project root for --codex-scope project (default: cwd)')
   .action(createLazyAction(() => import('./doctor.js'), 'doctorCommand'));
+
+doctor.addHelpText(
+  'after',
+  '\nTargets:\n  codex  Check Codex CLI, config, skills, plugin/hooks, and MCP protocol health.\n',
+);
 
 program
   .command('clean')

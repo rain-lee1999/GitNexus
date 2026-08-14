@@ -5,6 +5,11 @@ import path from 'path';
 
 const execFileSyncMock = vi.fn();
 const spawnSyncMock = vi.fn(() => ({ status: 0, error: undefined }));
+const packageRootSuffix = path.join(path.sep, 'gitnexus');
+const cliEntrySuffix = path.join('dist', 'cli', 'index.js');
+const npmCommand = process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : 'npm';
+const npmArgs = (args: string[]) =>
+  process.platform === 'win32' ? ['/d', '/s', '/c', 'npm.cmd', ...args] : args;
 
 vi.mock('child_process', () => ({
   execFileSync: execFileSyncMock,
@@ -61,13 +66,16 @@ describe('updateCommand', () => {
       ['fetch', '--quiet', sourceRepo, 'main'],
       expect.objectContaining({ cwd: '/target-repo' }),
     );
-    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('2 update commit(s) available'));
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining('2 update commit(s) available'),
+    );
     expect(spawnSyncMock).not.toHaveBeenCalled();
   });
 
   it('makes --simple explicitly tell the user to run gitnexus update when dependency manifests changed', async () => {
     execFileSyncMock.mockImplementation((command: string, args: string[]) => {
-      if (command === 'git' && args.join(' ') === 'rev-parse --show-toplevel') return '/target-repo\n';
+      if (command === 'git' && args.join(' ') === 'rev-parse --show-toplevel')
+        return '/target-repo\n';
       if (command === 'git' && args[0] === 'status') return '';
       if (command === 'git' && args[0] === 'fetch') return '';
       if (command === 'git' && args[0] === 'rev-list') return '1\n';
@@ -82,16 +90,21 @@ describe('updateCommand', () => {
 
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Run: gitnexus update'));
     expect(spawnSyncMock).not.toHaveBeenCalledWith(
-      'node',
+      process.execPath,
       ['scripts/build.js'],
       expect.anything(),
     );
-    expect(spawnSyncMock).not.toHaveBeenCalledWith('npm', ['install', '-g', '.'], expect.anything());
+    expect(spawnSyncMock).not.toHaveBeenCalledWith(
+      npmCommand,
+      npmArgs(['install', '-g', '.']),
+      expect.anything(),
+    );
   });
 
   it('makes --simple explicitly tell the user to run gitnexus update --setup when setup-sensitive files changed', async () => {
     execFileSyncMock.mockImplementation((command: string, args: string[]) => {
-      if (command === 'git' && args.join(' ') === 'rev-parse --show-toplevel') return '/target-repo\n';
+      if (command === 'git' && args.join(' ') === 'rev-parse --show-toplevel')
+        return '/target-repo\n';
       if (command === 'git' && args[0] === 'status') return '';
       if (command === 'git' && args[0] === 'fetch') return '';
       if (command === 'git' && args[0] === 'rev-list') return '1\n';
@@ -105,16 +118,18 @@ describe('updateCommand', () => {
     await updateCommand({ simple: true });
 
     expect(spawnSyncMock).toHaveBeenCalledWith(
-      'node',
+      process.execPath,
       ['scripts/build.js'],
-      expect.objectContaining({ cwd: expect.stringContaining('/gitnexus') }),
+      expect.objectContaining({ cwd: expect.stringContaining(packageRootSuffix) }),
     );
     expect(spawnSyncMock).toHaveBeenCalledWith(
-      'npm',
-      ['install', '-g', '.'],
-      expect.objectContaining({ cwd: expect.stringContaining('/gitnexus') }),
+      npmCommand,
+      npmArgs(['install', '-g', '.']),
+      expect.objectContaining({ cwd: expect.stringContaining(packageRootSuffix) }),
     );
-    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Run: gitnexus update --setup'));
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining('Run: gitnexus update --setup'),
+    );
   });
 
   it('runs setup only when --setup is requested on a full update', async () => {
@@ -123,24 +138,24 @@ describe('updateCommand', () => {
     await updateCommand({ setup: true });
 
     expect(spawnSyncMock).toHaveBeenCalledWith(
-      'npm',
-      ['install'],
-      expect.objectContaining({ cwd: expect.stringContaining('/gitnexus') }),
+      npmCommand,
+      npmArgs(['install']),
+      expect.objectContaining({ cwd: expect.stringContaining(packageRootSuffix) }),
     );
     expect(spawnSyncMock).toHaveBeenCalledWith(
-      'node',
+      process.execPath,
       ['scripts/build.js'],
-      expect.objectContaining({ cwd: expect.stringContaining('/gitnexus') }),
+      expect.objectContaining({ cwd: expect.stringContaining(packageRootSuffix) }),
     );
     expect(spawnSyncMock).toHaveBeenCalledWith(
-      'npm',
-      ['install', '-g', '.'],
-      expect.objectContaining({ cwd: expect.stringContaining('/gitnexus') }),
+      npmCommand,
+      npmArgs(['install', '-g', '.']),
+      expect.objectContaining({ cwd: expect.stringContaining(packageRootSuffix) }),
     );
     expect(spawnSyncMock).toHaveBeenCalledWith(
-      'node',
-      [expect.stringContaining('dist/cli/index.js'), 'setup'],
-      expect.objectContaining({ cwd: expect.stringContaining('/gitnexus') }),
+      process.execPath,
+      [expect.stringContaining(cliEntrySuffix), 'setup'],
+      expect.objectContaining({ cwd: expect.stringContaining(packageRootSuffix) }),
     );
   });
 });

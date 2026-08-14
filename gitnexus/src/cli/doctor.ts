@@ -2,7 +2,15 @@ import { getRuntimeCapabilities, getRuntimeFingerprint } from '../core/platform/
 import { resolveEmbeddingConfig } from '../core/embeddings/config.js';
 import { isHttpMode } from '../core/embeddings/http-client.js';
 
-export const doctorCommand = async () => {
+export const doctorCommand = async (target?: string, options: Record<string, unknown> = {}) => {
+  if (target === 'codex') {
+    const { doctorCodexCommand } = await import('./doctor-codex.js');
+    return doctorCodexCommand(options);
+  }
+  if (target) {
+    throw new Error(`Unknown doctor target "${target}". Expected "codex" or no target.`);
+  }
+
   const fingerprint = getRuntimeFingerprint();
   const capabilities = getRuntimeCapabilities();
   const embeddingConfig = resolveEmbeddingConfig();

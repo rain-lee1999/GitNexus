@@ -29,6 +29,26 @@ import type { LocalBackend } from './local/local-backend.js';
 import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
 
 /**
+ * Server-wide workflow guidance returned in the MCP initialize response.
+ *
+ * Codex guarantees that server instructions participate in tool selection.
+ * Keep the first 512 characters self-contained so clients with a short
+ * instruction budget still receive the complete safety-critical workflow.
+ */
+export const GITNEXUS_MCP_INSTRUCTIONS =
+  'GitNexus: list_repos; query then context; before edits impact with direction "upstream"; before commit detect_changes. Graph tools require `repo` as an absolute worktree path; aliases rejected. Stale/missing: `gitnexus refresh status` → read-only `gitnexus refresh plan` → only with writable targets/scoped approval `gitnexus refresh ensure --path <absolute-worktree>`. Index-only writes .gitnexus, Git metadata, and GITNEXUS_HOME; otherwise use stale results + source. `detect_changes` is not freshness-gated.';
+
+export interface CreateMCPServerOptions {
+  /** Expose tools whose annotations do not mark them as read-only. */
+  allowMutatingTools?: boolean;
+}
+
+function isMutatingTool(toolName: string): boolean {
+  const definition = GITNEXUS_TOOLS.find((tool) => tool.name === toolName);
+  return definition?.annotations?.readOnlyHint !== true;
+}
+
+/**
  * Next-step hints appended to tool responses.
  *
  * Agents often stop after one tool call. These hints guide them to the
@@ -81,9 +101,13 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
  * Create a configured MCP Server with all handlers registered.
  * Transport-agnostic — caller connects the desired transport.
  */
-export function createMCPServer(backend: LocalBackend): Server {
+export function createMCPServer(
+  backend: LocalBackend,
+  options: CreateMCPServerOptions = {},
+): Server {
   const require = createRequire(import.meta.url);
   const pkgVersion: string = require('../../package.json').version;
+  const allowMutatingTools = options.allowMutatingTools ?? true;
   const server = new Server(
     {
       name: 'gitnexus',
@@ -95,6 +119,7 @@ export function createMCPServer(backend: LocalBackend): Server {
         resources: {},
         prompts: {},
       },
+      instructions: GITNEXUS_MCP_INSTRUCTIONS,
     },
   );
 
@@ -154,7 +179,9 @@ export function createMCPServer(backend: LocalBackend): Server {
 
   // Handle list tools request
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: GITNEXUS_TOOLS.map((tool) => ({
+    tools: GITNEXUS_TOOLS.filter(
+      (tool) => allowMutatingTools || tool.annotations?.readOnlyHint === true,
+    ).map((tool) => ({
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema,
@@ -167,9 +194,18 @@ export function createMCPServer(backend: LocalBackend): Server {
     const { name, arguments: args } = request.params;
 
     try {
+      if (!allowMutatingTools && isMutatingTool(name)) {
+        throw new Error(
+          `Tool "${name}" is disabled because this GitNexus MCP endpoint is read-only.`,
+        );
+      }
       const result = await backend.callTool(name, args);
       const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
       const hint = getNextStepHint(name, args as Record<string, any> | undefined);
+      const structuredContent =
+        typeof result === 'object' && result !== null && !Array.isArray(result)
+          ? (result as Record<string, unknown>)
+          : undefined;
 
       return {
         content: [
@@ -178,6 +214,7 @@ export function createMCPServer(backend: LocalBackend): Server {
             text: resultText + hint,
           },
         ],
+        ...(structuredContent ? { structuredContent } : {}),
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';

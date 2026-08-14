@@ -1,0 +1,48 @@
+{
+  "description": "GitNexus search enrichment, narrow graph-query freshness gates, and stale-marker hooks for Codex.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/gitnexus-hook.cjs\"",
+            "commandWindows": "node \"%PLUGIN_ROOT%\\hooks\\gitnexus-hook.cjs\"",
+            "timeout": 10,
+            "statusMessage": "Enriching search with GitNexus",
+            "additionalContextLimit": 1500
+          }
+        ]
+      },
+      {
+        "matcher": "^mcp__gitnexus__(query|cypher|context|impact|route_map|tool_map|shape_check|api_impact)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/gitnexus-graph-gate.cjs\"",
+            "commandWindows": "node \"%PLUGIN_ROOT%\\hooks\\gitnexus-graph-gate.cjs\"",
+            "timeout": 10,
+            "statusMessage": "Checking GitNexus graph freshness",
+            "additionalContextLimit": 1500
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/gitnexus-hook.cjs\"",
+            "commandWindows": "node \"%PLUGIN_ROOT%\\hooks\\gitnexus-hook.cjs\"",
+            "timeout": 10,
+            "statusMessage": "Marking GitNexus graph stale",
+            "additionalContextLimit": 500
+          }
+        ]
+      }
+    ]
+  }
+}

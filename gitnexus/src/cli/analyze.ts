@@ -19,6 +19,7 @@ import {
   RegistryNameCollisionError,
   AnalysisNotFinalizedError,
   assertAnalysisFinalized,
+  withAnalysisLock,
 } from '../storage/repo-manager.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
@@ -103,10 +104,15 @@ export interface AnalyzeOptions {
    */
   dropEmbeddings?: boolean;
   skills?: boolean;
+  /**
+   * Refresh graph storage only. Intended for automatic refreshers, so it
+   * never creates or updates AGENTS.md or `.agents/skills`.
+   */
+  indexOnly?: boolean;
   verbose?: boolean;
-  /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
+  /** Skip the GitNexus-managed AGENTS.md block update. */
   skipAgentsMd?: boolean;
-  /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
+  /** Omit volatile symbol/relationship counts from AGENTS.md. */
   noStats?: boolean;
   /** Index the folder even when no .git directory is present. */
   skipGit?: boolean;
@@ -146,6 +152,12 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   // async error that escapes the try/catch below (#1169) surfaces with
   // a stack trace and a non-zero exit code instead of a silent exit 0.
   installFatalHandlers();
+
+  if (options?.indexOnly && options?.skills) {
+    console.error('  --index-only cannot be combined with --skills.\n');
+    process.exitCode = 1;
+    return;
+  }
 
   if (options?.verbose) {
     process.env.GITNEXUS_VERBOSE = '1';
@@ -341,8 +353,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         embeddings: options?.embeddings,
         dropEmbeddings: options?.dropEmbeddings,
         skipGit: options?.skipGit,
-        skipAgentsMd: options?.skipAgentsMd,
-        noStats: options?.noStats,
+        indexOnly: options?.indexOnly,
         registryName: options?.name,
         // Registry-collision bypass — its own CLI flag, intentionally NOT
         // overloading --force. A user who hits the collision guard should
@@ -386,19 +397,26 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     await assertAnalysisFinalized(repoPath);
 
     // Skill generation (CLI-only, uses pipeline result from analysis)
-    if (options?.skills && result.pipelineResult) {
+    if (options?.skills && !options?.indexOnly && result.pipelineResult) {
       updateBar(99, 'Generating skill files...');
       try {
         const { generateSkillFiles } = await import('./skill-gen.js');
         const { generateAIContextFiles } = await import('./ai-context.js');
-        const skillResult = await generateSkillFiles(
-          repoPath,
-          result.repoName,
-          result.pipelineResult,
-        );
-        if (skillResult.skills.length > 0) {
-          barLog(`  Generated ${skillResult.skills.length} skill files`);
-          // Re-generate AI context files now that we have skill info
+        // `repoName` is the registry identifier and can be a worktree-safe
+        // coordinator alias. Generated skills are user-visible tracked
+        // context, so use the display name carried by the orchestrator.
+        const contextName = result.contextName ?? result.repoName;
+        await withAnalysisLock(repoPath, async () => {
+          const skillResult = await generateSkillFiles(
+            repoPath,
+            contextName,
+            result.pipelineResult,
+          );
+          if (skillResult.skills.length > 0) {
+            barLog(`  Generated ${skillResult.skills.length} skill files`);
+          }
+          // Re-generate AI context files even when there are no repo-specific
+          // communities; `--skills` is the explicit legacy managed-context path.
           const s = result.stats;
           const communityResult = result.pipelineResult?.communityResult;
           let aggregatedClusterCount = 0;
@@ -416,7 +434,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
           await generateAIContextFiles(
             repoPath,
             sp,
-            result.repoName,
+            contextName,
             {
               files: s.files ?? 0,
               nodes: s.nodes ?? 0,
@@ -428,9 +446,10 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
             skillResult.skills,
             { skipAgentsMd: options?.skipAgentsMd, noStats: options?.noStats },
           );
-        }
-      } catch {
-        /* best-effort */
+        });
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Skill/context generation failed: ${message}`);
       }
     }
 

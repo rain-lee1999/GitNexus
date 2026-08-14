@@ -26,6 +26,10 @@ jobs:
 
   publish:
     needs: ci
+    # Stable npm publishing is owned by the canonical upstream repository.
+    # Fork tags still exercise the read-only CI job above, but cannot publish
+    # the upstream package or create a release through this workflow.
+    if: github.repository == 'abhigyanpatwari/GitNexus'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

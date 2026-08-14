@@ -49,7 +49,11 @@ describe('LadybugDB index health and promotion', () => {
     await fs.mkdir(storagePath, { recursive: true });
     await fs.writeFile(
       path.join(storagePath, 'meta.json'),
-      JSON.stringify({ repoPath: tmpRepo.dbPath, lastCommit: 'abc', indexedAt: new Date().toISOString() }),
+      JSON.stringify({
+        repoPath: tmpRepo.dbPath,
+        lastCommit: 'abc',
+        indexedAt: new Date().toISOString(),
+      }),
     );
 
     const health = await getIndexHealth(tmpRepo.dbPath);

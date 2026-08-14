@@ -1,4 +1,5 @@
 # GitNexus
+
 **⚠️ Important Notice:** GitNexus has NO official cryptocurrency, token, or coin. Any token/coin using the GitNexus name on Pump.fun or any other platform is **not affiliated with, endorsed by, or created by** this project or its maintainers. Do not purchase any cryptocurrency claiming association with GitNexus.
 
 <div align="center">
@@ -27,14 +28,9 @@
 
 Indexes any codebase into a knowledge graph — every dependency, call chain, cluster, and execution flow — then exposes it through smart tools so AI agents never miss code.
 
-
-
-
 https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 
-
-
-> *Like DeepWiki, but deeper.* DeepWiki helps you *understand* code. GitNexus lets you *analyze* it — because a knowledge graph tracks every relationship, not just descriptions.
+> _Like DeepWiki, but deeper._ DeepWiki helps you _understand_ code. GitNexus lets you _analyze_ it — because a knowledge graph tracks every relationship, not just descriptions.
 
 **TL;DR:** The **Web UI** is a quick way to chat with any repo. The **CLI + MCP** is how you make your AI agent actually reliable — it gives Cursor, Claude Code, Codex, and friends a deep architectural view of your codebase so they stop missing dependencies, breaking call chains, and shipping blind edits. Even smaller models get full architectural clarity, making it compete with Goliath models.
 
@@ -44,18 +40,17 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 
 [![Star History Chart](https://api.star-history.com/svg?repos=abhigyanpatwari/GitNexus&type=date&legend=top-left)](https://www.star-history.com/#abhigyanpatwari/GitNexus&type=date&legend=top-left)
 
-
 ## Two Ways to Use GitNexus
 
-|                   | **CLI + MCP**                                            | **Web UI**                                             |
-| ----------------- | -------------------------------------------------------------- | ------------------------------------------------------------ |
-| **What**    | Index repos locally, connect AI agents via MCP                 | Visual graph explorer + AI chat in browser                   |
-| **For**     | Daily development with Cursor, Claude Code, Codex, Windsurf, OpenCode | Quick exploration, demos, one-off analysis                   |
-| **Scale**   | Full repos, any size                                           | Limited by browser memory (~5k files), or unlimited via backend mode |
-| **Install** | `npm install -g gitnexus`                                    | No install — [gitnexus.vercel.app](https://gitnexus.vercel.app) |
-| **Storage** | LadybugDB native (fast, persistent)                               | LadybugDB WASM (in-memory, per session)                         |
-| **Parsing** | Tree-sitter native bindings                                    | Tree-sitter WASM                                             |
-| **Privacy** | Everything local, no network                                   | Everything in-browser, no server                             |
+|             | **CLI + MCP**                                                         | **Web UI**                                                           |
+| ----------- | --------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| **What**    | Index repos locally, connect AI agents via MCP                        | Visual graph explorer + AI chat in browser                           |
+| **For**     | Daily development with Cursor, Claude Code, Codex, Windsurf, OpenCode | Quick exploration, demos, one-off analysis                           |
+| **Scale**   | Full repos, any size                                                  | Limited by browser memory (~5k files), or unlimited via backend mode |
+| **Install** | `npm install -g gitnexus`                                             | No install — [gitnexus.vercel.app](https://gitnexus.vercel.app)      |
+| **Storage** | LadybugDB native (fast, persistent)                                   | LadybugDB WASM (in-memory, per session)                              |
+| **Parsing** | Tree-sitter native bindings                                           | Tree-sitter WASM                                                     |
+| **Privacy** | Everything local, no network                                          | Everything in-browser, no server                                     |
 
 > **Bridge mode:** `gitnexus serve` connects the two — the web UI auto-detects the local server and can browse all your CLI-indexed repos without re-uploading or re-indexing.
 
@@ -66,6 +61,7 @@ https://github.com/user-attachments/assets/172685ba-8e54-4ea7-9ad1-e31a3398da72
 GitNexus is available as an **enterprise offering** - either as a fully managed **SaaS** or a **self-hosted** deployment. Also available for **commercial use** of the OSS version with proper licensing.
 
 Enterprise includes:
+
 - **PR Review** - automated blast radius analysis on pull requests
 - **Auto-updating Code Wiki** - always up-to-date documentation (Code Wiki is also available in OSS)
 - **Auto-reindexing** - knowledge graph stays fresh automatically
@@ -74,6 +70,7 @@ Enterprise includes:
 - **Priority feature/language support** - request new languages or features
 
 **Upcoming:**
+
 - Auto regression forensics
 - End-to-end test generation
 
@@ -86,6 +83,7 @@ Enterprise includes:
 ## Development
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — packages, index → graph → MCP flow, where to change code
+- [Project memory](docs/project-memory/00-index.md) — durable architecture, protocols, decisions, status, and verification
 - [RUNBOOK.md](RUNBOOK.md) — analyze, embeddings, stale index, MCP recovery, CI snippets
 - [GUARDRAILS.md](GUARDRAILS.md) — safety rules and operational “Signs” for contributors and agents
 - [CONTRIBUTING.md](CONTRIBUTING.md) — license, setup, commits, and pull requests
@@ -102,9 +100,41 @@ The CLI indexes your repository and runs an MCP server that gives AI agents deep
 npx gitnexus analyze
 ```
 
-That's it. This indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files — all in one command.
+That's it. This indexes the codebase and leaves tracked agent assets unchanged. To add or refresh repo-local `AGENTS.md` plus the seven managed skills, review the read-only plan and then apply it explicitly:
+
+```bash
+npx gitnexus agent-context plan --path /absolute/path/to/worktree
+npx gitnexus agent-context apply --path /absolute/path/to/worktree --expect <plan-id>
+```
 
 To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
+
+### Worktree-safe refresh
+
+Use `refresh ensure` for the first graph index and ordinary graph freshness, but only after checking its write plan. Use `agent-context plan/apply` for managed `AGENTS.md`/skills; use a full `analyze` for embeddings or an explicit repair. Initialize every worktree once; only a primary checkout using conventional hooks may install Git-side stale markers:
+
+```bash
+# Read-only: inspect freshness and every path a refresh may mutate.
+gitnexus refresh status --path /absolute/path/to/worktree
+gitnexus refresh plan --path /absolute/path/to/worktree
+
+# Include Serena's config/lock/project-data targets when prewarming Serena.
+gitnexus refresh plan --path /absolute/path/to/worktree \
+  --with-serena --serena-bin /absolute/path/to/serena --serena-language typescript
+
+# Only after the worktree .gitnexus/, applicable Git metadata, and GITNEXUS_HOME
+# are writable (or a scoped approval covers all write targets), run once per worktree.
+gitnexus refresh init --path /absolute/path/to/worktree
+
+# Optional: primary checkout only. Linked worktrees share Git hooks and are skipped safely.
+gitnexus refresh init --path /absolute/path/to/primary-checkout --install-git-hooks
+
+# Safe to call from concurrent Codex sessions once its write targets are authorized;
+# one writer per worktree.
+gitnexus refresh ensure --path /absolute/path/to/worktree
+```
+
+`refresh plan` is read-only and lists GitNexus-owned mutation targets before coordinator state exists. Pass `--install-git-hooks` to the plan when that initialization option is intended; it declares each managed `post-*` wrapper or an explicit skip. `refresh init` and `refresh ensure` write the worktree's `.gitnexus/`, applicable Git exclude metadata, and `GITNEXUS_HOME` (registry and locks). Pass the same `--with-serena` arguments to `plan` before a Serena prewarm so it lists GitNexus-known Serena config/lock/project-data paths. That path deliberately reports `writeTargetsComplete: false`: Serena, language servers, and toolchains are external executables that can write environment-specific caches or install paths which cannot be exhaustively predicted. Obtain separate authority for those external writes before using `--with-serena`. `refresh ensure` serializes writers and runs `analyze --index-only`: it does not rewrite `AGENTS.md` or `.agents/skills/`, but it is not a read-only cache operation. The Codex graph gate only checks freshness and denies stale graph calls; it does not queue or authorize a refresh. Without authority for every planned GitNexus target (and the disclosed external Serena scope, if enabled), use existing graph results only with an explicit stale warning, `detect_changes`, and source inspection. For the freshness-gated graph tools (`query`, `cypher`, `context`, `impact`, `route_map`, `tool_map`, `shape_check`, and `api_impact`), pass `repo` explicitly as the absolute worktree path; the gate intentionally rejects aliases. `detect_changes` is intentionally not freshness-gated. If `core.hooksPath` is already managed by Husky, another dispatcher, or the checkout is linked, `init --install-git-hooks` safely reports a skip instead of changing project hook files.
 
 ### MCP Setup
 
@@ -112,41 +142,38 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 
 ### Editor Support
 
-| Editor                | MCP | Skills | Hooks (auto-augment) | Support        |
-| --------------------- | --- | ------ | -------------------- | -------------- |
-| **Claude Code** | Yes | Yes    | Yes (PreToolUse + PostToolUse) | **Full** |
-| **Cursor**      | Yes | Yes    | —                   | MCP + Skills   |
-| **Codex**       | Yes | Yes    | —                   | MCP + Skills   |
-| **Hermes**      | Yes | Yes    | —                   | MCP + Skills   |
-| **Windsurf**    | Yes | —     | —                   | MCP            |
-| **OpenCode**    | Yes | Yes    | —                   | MCP + Skills   |
+| Editor          | MCP | Skills | Hooks                    | Support           |
+| --------------- | --- | ------ | ------------------------ | ----------------- |
+| **Codex**       | Yes | Yes    | PreToolUse + PostToolUse | **Native plugin** |
+| **Cursor**      | Yes | Yes    | —                        | MCP + Skills      |
+| **Hermes**      | Yes | Yes    | —                        | MCP + Skills      |
+| **Windsurf**    | Yes | —      | —                        | MCP               |
+| **OpenCode**    | Yes | Yes    | —                        | MCP + Skills      |
+| **Claude Code** | Yes | Legacy | Legacy                   | MCP compatible    |
 
-> **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that enrich searches with graph context + PostToolUse hooks that detect a stale index after commits and prompt the agent to reindex.
+> **Codex** gets the primary integration: a version-pinned plugin bundles MCP, a workflow skill, and PreToolUse/PostToolUse hooks. Repository assets follow Codex's `AGENTS.md` and `.agents/skills/` discovery contracts; no `.claude` mirror is generated.
 
 ## Community Integrations
 
 Built by the community — not officially maintained, but worth checking out.
 
-| Project | Author | Description |
-|---------|--------|-------------|
-| [pi-gitnexus](https://github.com/tintinweb/pi-gitnexus) | [@tintinweb](https://github.com/tintinweb) | GitNexus plugin for [pi](https://pi.dev) — `pi install npm:pi-gitnexus` |
-| [gitnexus-stable-ops](https://github.com/ShunsukeHayashi/gitnexus-stable-ops) | [@ShunsukeHayashi](https://github.com/ShunsukeHayashi) | Stable ops & deployment workflows (Miyabi ecosystem) |
+| Project                                                                       | Author                                                 | Description                                                             |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------- |
+| [pi-gitnexus](https://github.com/tintinweb/pi-gitnexus)                       | [@tintinweb](https://github.com/tintinweb)             | GitNexus plugin for [pi](https://pi.dev) — `pi install npm:pi-gitnexus` |
+| [gitnexus-stable-ops](https://github.com/ShunsukeHayashi/gitnexus-stable-ops) | [@ShunsukeHayashi](https://github.com/ShunsukeHayashi) | Stable ops & deployment workflows (Miyabi ecosystem)                    |
 
 > Have a project built on GitNexus? Open a PR to add it here!
 
 If you prefer manual configuration:
 
-**Claude Code** (full support — MCP + skills + hooks):
+**Codex** (recommended — plugin + MCP + skills + hooks):
 
 ```bash
-# macOS / Linux
-claude mcp add gitnexus -- npx -y gitnexus@latest mcp
-
-# Windows
-claude mcp add gitnexus -- cmd /c npx -y gitnexus@latest mcp
+npx gitnexus@latest setup
+# Review and trust the installed GitNexus hooks with /hooks in Codex.
 ```
 
-**Codex** (full support — MCP + skills):
+Direct MCP fallback:
 
 ```bash
 codex mcp add gitnexus -- npx -y gitnexus@latest mcp
@@ -206,15 +233,23 @@ args = ["-y", "gitnexus@latest", "mcp"]
 
 ```bash
 gitnexus setup                   # Configure MCP for your editors (one-time)
-gitnexus analyze [path]          # Index a repository (or update stale index)
+gitnexus analyze [path]          # Index graph/metadata/registry; never write agent assets
 gitnexus analyze --force         # Force full re-index
-gitnexus analyze --skills        # Generate repo-specific skill files from detected communities
-gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
-gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
+gitnexus agent-context plan --path /abs/worktree  # Read-only tracked-context diff
+gitnexus agent-context apply --path /abs/worktree --expect <plan-id>  # Explicit write
+gitnexus analyze --index-only    # Deprecated alias for the now-safe default
+gitnexus analyze --skills        # Legacy explicit generated-skills + context write path
+gitnexus analyze --skip-agents-md  # Legacy --skills only: preserve AGENTS.md
 gitnexus analyze --skip-git        # Index folders that are not Git repositories
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
+gitnexus setup --codex-scope project  # Write project-local Codex MCP config and skills
+gitnexus doctor codex            # Verify Codex CLI, plugin, skills, MCP config, and protocol
+gitnexus refresh init --path /abs/worktree  # Initialize one worktree
+gitnexus refresh status --path /abs/worktree                    # Show its freshness state
+gitnexus refresh plan --path /abs/worktree                      # Read-only write-target declaration
+gitnexus refresh ensure --path /abs/worktree                    # Authorized serialized index-only refresh
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI connection
 gitnexus list                    # List all indexed repositories
@@ -240,29 +275,34 @@ If `analyze` reports a worker parse timeout on a large or unusual repository, it
 
 ### What Your AI Agent Gets
 
-**16 tools** exposed via MCP (11 per-repo + 5 group):
+**13 tools** exposed via MCP (10 per-repo + repository discovery + 2 group tools):
 
-| Tool               | What It Does                                                      | `repo` Param |
-| ------------------ | ----------------------------------------------------------------- | -------------- |
-| `list_repos`     | Discover all indexed repositories                                 | —             |
-| `query`          | Process-grouped hybrid search (BM25 + semantic + RRF)             | Optional       |
-| `context`        | 360-degree symbol view — categorized refs, process participation | Optional       |
-| `impact`         | Blast radius analysis with depth grouping and confidence          | Optional       |
-| `detect_changes` | Git-diff impact — maps changed lines to affected processes       | Optional       |
-| `rename`         | Multi-file coordinated rename with graph + text search            | Optional       |
-| `cypher`         | Raw Cypher graph queries                                          | Optional       |
-| `group_list`     | List configured repository groups                                 | —             |
-| `group_sync`     | Extract contracts and match across repos/services                 | —             |
-| `group_contracts`| Inspect extracted contracts and cross-links                       | —             |
-| `group_query`    | Search execution flows across all repos in a group                | —             |
-| `group_status`   | Check staleness of repos in a group                               | —             |
+<!-- gitnexus:mcp-tools:start -->
+
+| Tool             | What It Does                                                     | `repo` Param |
+| ---------------- | ---------------------------------------------------------------- | ------------ |
+| `list_repos`     | Discover all indexed repositories                                | —            |
+| `query`          | Process-grouped hybrid search (BM25 + semantic + RRF)            | Optional     |
+| `cypher`         | Read-only Cypher queries against the code graph                  | Optional     |
+| `context`        | 360-degree symbol view — categorized refs, process participation | Optional     |
+| `detect_changes` | Git-diff impact — maps changed lines to affected processes       | Optional     |
+| `rename`         | Multi-file coordinated rename with graph + text search           | Optional     |
+| `impact`         | Blast radius analysis with depth grouping and confidence         | Optional     |
+| `route_map`      | Map API routes to handlers, middleware, and consumers            | Optional     |
+| `tool_map`       | Map MCP/RPC tools to definitions and handlers                    | Optional     |
+| `shape_check`    | Detect API response/consumer shape drift                         | Optional     |
+| `api_impact`     | Pre-change impact report for an API route                        | Optional     |
+| `group_list`     | List configured repository groups                                | —            |
+| `group_sync`     | Extract contracts and match across repos/services                | —            |
+
+<!-- gitnexus:mcp-tools:end -->
 
 > When only one repo is indexed, the `repo` parameter is optional. With multiple repos, specify which one: `query({query: "auth", repo: "my-app"})`.
 
 **Resources** for instant context:
 
-| Resource                                  | Purpose                                              |
-| ----------------------------------------- | ---------------------------------------------------- |
+| Resource                                | Purpose                                              |
+| --------------------------------------- | ---------------------------------------------------- |
 | `gitnexus://repos`                      | List all indexed repositories (read this first)      |
 | `gitnexus://repo/{name}/context`        | Codebase stats, staleness check, and available tools |
 | `gitnexus://repo/{name}/clusters`       | All functional clusters with cohesion scores         |
@@ -273,21 +313,24 @@ If `analyze` reports a worker parse timeout on a large or unusual repository, it
 
 **2 MCP prompts** for guided workflows:
 
-| Prompt            | What It Does                                                              |
-| ----------------- | ------------------------------------------------------------------------- |
-| `detect_impact` | Pre-commit change analysis — scope, affected processes, risk level       |
+| Prompt          | What It Does                                                              |
+| --------------- | ------------------------------------------------------------------------- |
+| `detect_impact` | Pre-commit change analysis — scope, affected processes, risk level        |
 | `generate_map`  | Architecture documentation from the knowledge graph with mermaid diagrams |
 
-**4 agent skills** installed to `.claude/skills/` automatically:
+**7 agent skills** installed as direct children of `.agents/skills/` for native Codex discovery by explicit `gitnexus agent-context apply --path <absolute-worktree>`:
 
 - **Exploring** — Navigate unfamiliar code using the knowledge graph
 - **Debugging** — Trace bugs through call chains
 - **Impact Analysis** — Analyze blast radius before changes
 - **Refactoring** — Plan safe refactors using dependency mapping
+- **PR Review** — Review changes with graph-backed impact evidence
+- **Guide** — Reference the complete MCP surface and workflows
+- **CLI** — Operate indexing, status, cleanup, and wiki commands
 
 **Repo-specific skills** generated with `--skills`:
 
-When you run `gitnexus analyze --skills`, GitNexus detects the functional areas of your codebase (via Leiden community detection) and generates a `SKILL.md` file for each one under `.claude/skills/generated/`. Each skill describes a module's key files, entry points, execution flows, and cross-area connections — so your AI agent gets targeted context for the exact area of code you're working in. Skills are regenerated on each `--skills` run to stay current with the codebase.
+When you run `gitnexus analyze --skills`, GitNexus detects the functional areas of your codebase (via Leiden community detection) and generates one direct Codex skill per area under `.agents/skills/gitnexus-generated-*/`. Each skill describes a module's key files, entry points, execution flows, and cross-area connections. GitNexus-owned generated skills are replaced on each `--skills` run; unrelated skills are left untouched.
 
 ---
 
@@ -358,14 +401,24 @@ npm run dev
 npx gitnexus@latest serve
 ```
 
+### HTTP MCP security
+
+The stdio MCP installed by `gitnexus setup` remains local. For `gitnexus serve`, `/api/mcp` is open without authentication only on a loopback bind. A non-loopback bind (including Docker's `0.0.0.0`) disables remote MCP until a bearer token is configured:
+
+```bash
+GITNEXUS_MCP_TOKEN='replace-with-a-long-random-token' gitnexus serve --host 0.0.0.0
+```
+
+Remote HTTP MCP is read-only by default. Set `GITNEXUS_MCP_ALLOW_MUTATIONS=1` only when remote clients must use `rename` or `group_sync`. `GITNEXUS_MCP_INSECURE=1` explicitly permits unauthenticated remote access and is intended only for an already-isolated network.
+
 ## Docker
 
 The official Docker setup ships **two signed images** orchestrated by `docker-compose.yaml`. Each image is published to both **GitHub Container Registry** (GHCR) and **Docker Hub** — same build, same digest, same Cosign signature — so pick whichever registry you prefer:
 
-| Purpose                                                                | GHCR (default in `docker-compose.yaml`)       | Docker Hub mirror                           |
-| ---------------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------- |
-| CLI / `gitnexus serve` backend (HTTP API on port `4747`, MCP, indexer) | `ghcr.io/abhigyanpatwari/gitnexus:latest`     | `akonlabs/gitnexus:latest`                  |
-| Static web UI (port `4173`)                                            | `ghcr.io/abhigyanpatwari/gitnexus-web:latest` | `akonlabs/gitnexus-web:latest`              |
+| Purpose                                                                | GHCR (default in `docker-compose.yaml`)       | Docker Hub mirror              |
+| ---------------------------------------------------------------------- | --------------------------------------------- | ------------------------------ |
+| CLI / `gitnexus serve` backend (HTTP API on port `4747`, MCP, indexer) | `ghcr.io/abhigyanpatwari/gitnexus:latest`     | `akonlabs/gitnexus:latest`     |
+| Static web UI (port `4173`)                                            | `ghcr.io/abhigyanpatwari/gitnexus-web:latest` | `akonlabs/gitnexus-web:latest` |
 
 > **Heads-up — image rename.** Earlier releases published the web UI under
 > `ghcr.io/abhigyanpatwari/gitnexus`. Starting with the introduction of the
@@ -581,22 +634,22 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 
 ### Supported Languages
 
-| Language | Imports | Named Bindings | Exports | Heritage | Type Annotations | Constructor Inference | Config | Frameworks | Entry Points |
-|----------|---------|----------------|---------|----------|-----------------|---------------------|--------|------------|-------------|
-| TypeScript | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| JavaScript | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ |
-| Python | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Java | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
-| Kotlin | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
-| C# | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Go | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Rust | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
-| PHP | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Ruby | ✓ | — | ✓ | ✓ | — | ✓ | — | ✓ | ✓ |
-| Swift | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| C | — | — | ✓ | — | ✓ | ✓ | — | ✓ | ✓ |
-| C++ | — | — | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
-| Dart | ✓ | — | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ |
+| Language   | Imports | Named Bindings | Exports | Heritage | Type Annotations | Constructor Inference | Config | Frameworks | Entry Points |
+| ---------- | ------- | -------------- | ------- | -------- | ---------------- | --------------------- | ------ | ---------- | ------------ |
+| TypeScript | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| JavaScript | ✓       | ✓              | ✓       | ✓        | —                | ✓                     | ✓      | ✓          | ✓            |
+| Python     | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| Java       | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| Kotlin     | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| C#         | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| Go         | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| Rust       | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| PHP        | ✓       | ✓              | ✓       | —        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| Ruby       | ✓       | —              | ✓       | ✓        | —                | ✓                     | —      | ✓          | ✓            |
+| Swift      | —       | —              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
+| C          | —       | —              | ✓       | —        | ✓                | ✓                     | —      | ✓          | ✓            |
+| C++        | —       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| Dart       | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
 
@@ -733,16 +786,16 @@ The wiki generator reads the indexed graph structure, groups files into modules 
 
 ## Tech Stack
 
-| Layer                     | CLI                                   | Web                                     |
-| ------------------------- | ------------------------------------- | --------------------------------------- |
+| Layer               | CLI                                   | Web                                     |
+| ------------------- | ------------------------------------- | --------------------------------------- |
 | **Runtime**         | Node.js (native)                      | Browser (WASM)                          |
 | **Parsing**         | Tree-sitter native bindings           | Tree-sitter WASM                        |
-| **Database**        | LadybugDB native                         | LadybugDB WASM                             |
+| **Database**        | LadybugDB native                      | LadybugDB WASM                          |
 | **Embeddings**      | HuggingFace transformers.js (GPU/CPU) | transformers.js (WebGPU/WASM)           |
 | **Search**          | BM25 + semantic + RRF                 | BM25 + semantic + RRF                   |
 | **Agent Interface** | MCP (stdio)                           | LangChain ReAct agent                   |
-| **Visualization**   | —                                    | Sigma.js + Graphology (WebGL)           |
-| **Frontend**        | —                                    | React 18, TypeScript, Vite, Tailwind v4 |
+| **Visualization**   | —                                     | Sigma.js + Graphology (WebGL)           |
+| **Frontend**        | —                                     | React 18, TypeScript, Vite, Tailwind v4 |
 | **Clustering**      | Graphology                            | Graphology                              |
 | **Concurrency**     | Worker threads + async                | Web Workers + Comlink                   |
 
@@ -758,12 +811,12 @@ The wiki generator reads the indexed graph structure, groups files into modules 
 
 ### Recently Completed
 
-- [X] Constructor-Inferred Type Resolution, `self`/`this` Receiver Mapping
-- [X] Wiki Generation, Multi-File Rename, Git-Diff Impact Analysis
-- [X] Process-Grouped Search, 360-Degree Context, Claude Code Hooks
-- [X] Multi-Repo MCP, Zero-Config Setup, 14 Language Support
-- [X] Community Detection, Process Detection, Confidence Scoring
-- [X] Hybrid Search, Vector Index
+- [x] Constructor-Inferred Type Resolution, `self`/`this` Receiver Mapping
+- [x] Wiki Generation, Multi-File Rename, Git-Diff Impact Analysis
+- [x] Process-Grouped Search, 360-Degree Context, Codex Hooks
+- [x] Multi-Repo MCP, Zero-Config Setup, 14 Language Support
+- [x] Community Detection, Process Detection, Confidence Scoring
+- [x] Hybrid Search, Vector Index
 
 ---
 

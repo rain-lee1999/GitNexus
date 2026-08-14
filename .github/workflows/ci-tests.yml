@@ -1,5 +1,8 @@
 name: Tests
 
+env:
+  CODEX_CLI_VERSION: 0.144.6
+
 on:
   workflow_call:
 
@@ -71,4 +74,24 @@ jobs:
         with:
           build: 'true'
       - run: npx vitest run
+        working-directory: gitnexus
+
+  codex-release-smoke:
+    name: ubuntu / Codex release package
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+
+      # Keep this release gate on Ubuntu: it validates the published Codex
+      # binary and the npm tarball contract without multiplying native installs
+      # across the existing macOS/Windows unit-test matrix.
+      - name: Install pinned Codex CLI
+        run: npm install --global "@openai/codex@${CODEX_CLI_VERSION}"
+
+      - name: Smoke-test packed GitNexus with Codex
+        run: node scripts/codex-release-smoke.mjs
         working-directory: gitnexus

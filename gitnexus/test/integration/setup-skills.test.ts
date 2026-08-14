@@ -3,13 +3,18 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'node:module';
 import { setupCommand } from '../../src/cli/setup.js';
+
+const require = createRequire(import.meta.url);
+const packageSpecifier = `gitnexus@${(require('../../package.json') as { version: string }).version}`;
 
 describe('setupCommand skills integration', () => {
   let tempHome: string;
   const originalHome = process.env.HOME;
   const originalUserProfile = process.env.USERPROFILE;
   const originalPath = process.env.PATH;
+  const originalCodexHome = process.env.CODEX_HOME;
   const testId = `${Date.now()}-${process.pid}`;
   const flatSkillName = `test-flat-skill-${testId}`;
   const dirSkillName = `test-dir-skill-${testId}`;
@@ -20,6 +25,8 @@ describe('setupCommand skills integration', () => {
     tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-setup-home-'));
     process.env.HOME = tempHome;
     process.env.USERPROFILE = tempHome; // os.homedir() checks USERPROFILE on Windows
+    delete process.env.CODEX_HOME;
+    process.env.PATH = '';
     await fs.mkdir(path.join(tempHome, '.cursor'), { recursive: true });
 
     // Create temporary source skills to verify both supported source layouts:
@@ -49,6 +56,8 @@ describe('setupCommand skills integration', () => {
     process.env.HOME = originalHome;
     process.env.USERPROFILE = originalUserProfile;
     process.env.PATH = originalPath;
+    if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = originalCodexHome;
     await fs.rm(tempHome, { recursive: true, force: true });
   });
 
@@ -96,7 +105,7 @@ describe('setupCommand skills integration', () => {
 
     const codexConfig = await fs.readFile(path.join(tempHome, '.codex', 'config.toml'), 'utf-8');
     expect(codexConfig).toContain('[mcp_servers.gitnexus]');
-    expect(codexConfig).toContain('gitnexus@latest');
+    expect(codexConfig).toContain(packageSpecifier);
 
     const codexSkill = await fs.readFile(
       path.join(tempHome, '.agents', 'skills', 'gitnexus-cli', 'SKILL.md'),

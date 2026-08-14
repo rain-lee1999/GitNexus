@@ -10,6 +10,7 @@ import {
   findRepo,
   unregisterRepo,
   listRegisteredRepos,
+  withAnalysisLock,
   assertSafeStoragePath,
   UnsafeStoragePathError,
 } from '../storage/repo-manager.js';
@@ -52,8 +53,13 @@ export const cleanCommand = async (options?: { force?: boolean; all?: boolean })
       }
 
       try {
-        await fs.rm(entry.storagePath, { recursive: true, force: true });
-        await unregisterRepo(entry.path);
+        // Use the same per-worktree writer lock as analyze/refresh. Without
+        // it, a concurrent index-only refresh can recreate or mutate the
+        // storage directory while this destructive command is removing it.
+        await withAnalysisLock(entry.path, async () => {
+          await fs.rm(entry.storagePath, { recursive: true, force: true });
+          await unregisterRepo(entry.path);
+        });
         console.log(`Deleted: ${entry.name} (${entry.storagePath})`);
       } catch (err) {
         console.error(`Failed to delete ${entry.name}:`, err);
@@ -81,8 +87,12 @@ export const cleanCommand = async (options?: { force?: boolean; all?: boolean })
   }
 
   try {
-    await fs.rm(repo.storagePath, { recursive: true, force: true });
-    await unregisterRepo(repo.repoPath);
+    // See the matching clean --all path above: deletion and analysis must
+    // participate in the same worktree-scoped writer lock.
+    await withAnalysisLock(repo.repoPath, async () => {
+      await fs.rm(repo.storagePath, { recursive: true, force: true });
+      await unregisterRepo(repo.repoPath);
+    });
     console.log(`Deleted: ${repo.storagePath}`);
   } catch (err) {
     console.error('Failed to delete:', err);

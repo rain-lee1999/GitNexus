@@ -3,8 +3,29 @@ import { execSync } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import { statusCommand } from '../../src/cli/status.js';
+import { GITNEXUS_CONTEXT_VERSION_MARKER } from '../../src/cli/ai-context.js';
+import { planAIContextFiles } from '../../src/cli/agent-context-plan.js';
+import { applyAIContextPlan } from '../../src/cli/agent-context-apply.js';
 import { getStoragePaths, saveMeta, type RepoMeta } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
+
+async function expectPlanPathMatchesReportedRepo(
+  output: string,
+  expectedRepoPath: string,
+): Promise<void> {
+  const repoPath = output.match(/^Repository: (.+)$/m)?.[1];
+  if (!repoPath) throw new Error(`Missing repository path in status output:\n${output}`);
+  const [reportedRealPath, expectedRealPath] = await Promise.all([
+    fs.realpath(repoPath),
+    fs.realpath(expectedRepoPath),
+  ]);
+  const normalize = (value: string) => {
+    const nativePath = path.normalize(value);
+    return process.platform === 'win32' ? nativePath.toLowerCase() : nativePath;
+  };
+  expect(normalize(reportedRealPath)).toBe(normalize(expectedRealPath));
+  expect(output).toContain(`gitnexus agent-context plan --path '${repoPath}'`);
+}
 
 describe('statusCommand enrichment reporting', () => {
   let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
@@ -39,15 +60,43 @@ describe('statusCommand enrichment reporting', () => {
     await fs.writeFile(lbugPath, 'db');
   }
 
+  async function writeManagedSkills(indexedCommit: string) {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    await fs.mkdir(storagePath, { recursive: true });
+    await fs.writeFile(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify({
+        repoPath: tmpRepo.dbPath,
+        lastCommit: indexedCommit,
+        indexedAt: '2026-05-04T00:00:00.000Z',
+        stats: {},
+      }),
+      'utf-8',
+    );
+    const plan = await planAIContextFiles(tmpRepo.dbPath, storagePath, 'TestProject', {});
+    await applyAIContextPlan(plan);
+  }
+
   it('shows embeddings/vector/FTS capability state and no enrichment recommendation when already enriched', async () => {
     const currentCommit = execSync('git rev-parse HEAD', {
       cwd: tmpRepo.dbPath,
       encoding: 'utf-8',
     }).trim();
 
-    await fs.mkdir(path.join(tmpRepo.dbPath, '.claude', 'skills', 'gitnexus'), { recursive: true });
-    await fs.writeFile(path.join(tmpRepo.dbPath, 'AGENTS.md'), '<!-- gitnexus:start -->\nctx\n<!-- gitnexus:end -->\n');
-    await fs.writeFile(path.join(tmpRepo.dbPath, 'CLAUDE.md'), '<!-- gitnexus:start -->\nctx\n<!-- gitnexus:end -->\n');
+    await writeManagedSkills(currentCommit);
+    const generatedDir = path.join(tmpRepo.dbPath, '.agents', 'skills', 'gitnexus-generated-auth');
+    await fs.mkdir(generatedDir, { recursive: true });
+    await fs.writeFile(path.join(generatedDir, 'SKILL.md'), '# Auth\n', 'utf-8');
+    await fs.writeFile(
+      path.join(tmpRepo.dbPath, '.agents', 'skills', '.gitnexus-generated-commit'),
+      `${currentCommit}\n`,
+      'utf-8',
+    );
+    await fs.writeFile(
+      path.join(tmpRepo.dbPath, 'AGENTS.md'),
+      `<!-- gitnexus:start -->\n${GITNEXUS_CONTEXT_VERSION_MARKER}\nctx\n<!-- gitnexus:end -->\n`,
+      'utf-8',
+    );
 
     await writeHealthyMeta({
       repoPath: tmpRepo.dbPath,
@@ -68,8 +117,11 @@ describe('statusCommand enrichment reporting', () => {
     expect(output).toContain('Embeddings: 9');
     expect(output).toContain('Vector search: vector-index');
     expect(output).toContain('FTS: available');
-    expect(output).toContain('Agent helpers: AGENTS.md present, CLAUDE.md present, skills present');
+    expect(output).toContain(
+      'Agent helpers: AGENTS.md current, managed skills current, generated skills current',
+    );
     expect(output).not.toContain('Recommendation: run gitnexus analyze --force --embeddings');
+    expect(output).not.toContain('gitnexus agent-context plan');
     expect(output).not.toContain('Recommendation: run gitnexus analyze --force --skills');
   });
 
@@ -92,8 +144,179 @@ describe('statusCommand enrichment reporting', () => {
     expect(output).toContain('Embeddings: 0');
     expect(output).toContain('Vector search: unavailable');
     expect(output).toContain('FTS: unknown');
-    expect(output).toContain('Agent helpers: AGENTS.md missing, CLAUDE.md missing, skills missing');
+    expect(output).toContain(
+      'Agent helpers: AGENTS.md missing, managed skills missing, generated skills not-generated',
+    );
     expect(output).toContain('Recommendation: run gitnexus analyze --force --embeddings');
+    await expectPlanPathMatchesReportedRepo(output, tmpRepo.dbPath);
+    expect(output).not.toContain('Recommendation: run gitnexus analyze --force --skills');
+  });
+
+  it('does not require a generated marker when no generated skills exist', async () => {
+    const currentCommit = execSync('git rev-parse HEAD', {
+      cwd: tmpRepo.dbPath,
+      encoding: 'utf-8',
+    }).trim();
+
+    await writeManagedSkills(currentCommit);
+    await fs.writeFile(
+      path.join(tmpRepo.dbPath, 'AGENTS.md'),
+      `<!-- gitnexus:start -->\n${GITNEXUS_CONTEXT_VERSION_MARKER}\nctx\n<!-- gitnexus:end -->\n`,
+      'utf-8',
+    );
+    await writeHealthyMeta({
+      repoPath: tmpRepo.dbPath,
+      lastCommit: currentCommit,
+      indexedAt: '2026-05-04T00:00:00.000Z',
+      stats: { embeddings: 9 },
+    });
+
+    await statusCommand();
+
+    const output = logs.join('\n');
+    expect(output).toContain('generated skills not-generated');
+    expect(output).not.toContain('gitnexus agent-context plan');
+    expect(output).not.toContain('Recommendation: run gitnexus analyze --force --skills');
+  });
+
+  it('reports legacy commit-based AGENTS.md context as stale for one-time migration', async () => {
+    const currentCommit = execSync('git rev-parse HEAD', {
+      cwd: tmpRepo.dbPath,
+      encoding: 'utf-8',
+    }).trim();
+
+    await writeManagedSkills(currentCommit);
+    await fs.writeFile(
+      path.join(tmpRepo.dbPath, 'AGENTS.md'),
+      `<!-- gitnexus:start -->\n<!-- gitnexus:index-commit:${currentCommit} -->\nctx\n<!-- gitnexus:end -->\n`,
+      'utf-8',
+    );
+    await writeHealthyMeta({
+      repoPath: tmpRepo.dbPath,
+      lastCommit: currentCommit,
+      indexedAt: '2026-05-04T00:00:00.000Z',
+      stats: { embeddings: 9 },
+    });
+
+    await statusCommand();
+
+    const output = logs.join('\n');
+    expect(output).toContain('Agent helpers: AGENTS.md stale, managed skills current');
+    await expectPlanPathMatchesReportedRepo(output, tmpRepo.dbPath);
+    expect(output).not.toContain('Recommendation: run gitnexus analyze --force --skills');
+  });
+
+  it('keeps managed skills current when only the indexed source commit changes', async () => {
+    const firstCommit = execSync('git rev-parse HEAD', {
+      cwd: tmpRepo.dbPath,
+      encoding: 'utf-8',
+    }).trim();
+    await writeManagedSkills(firstCommit);
+
+    execSync(
+      'git -c user.name=test -c user.email=test@test commit --allow-empty -m "source change"',
+      { cwd: tmpRepo.dbPath, stdio: 'pipe' },
+    );
+    const secondCommit = execSync('git rev-parse HEAD', {
+      cwd: tmpRepo.dbPath,
+      encoding: 'utf-8',
+    }).trim();
+    await writeHealthyMeta({
+      repoPath: tmpRepo.dbPath,
+      lastCommit: secondCommit,
+      indexedAt: '2026-05-04T01:00:00.000Z',
+      stats: { embeddings: 9 },
+    });
+
+    await statusCommand();
+
+    const output = logs.join('\n');
+    expect(output).toContain(
+      'Agent helpers: AGENTS.md current, managed skills current, generated skills not-generated',
+    );
+    expect(output).not.toContain('gitnexus agent-context plan');
+  });
+
+  it('reports a modified managed skill as stale even when its marker is unchanged', async () => {
+    const currentCommit = execSync('git rev-parse HEAD', {
+      cwd: tmpRepo.dbPath,
+      encoding: 'utf-8',
+    }).trim();
+    await writeHealthyMeta(currentCommit, 2);
+    await writeManagedSkills(currentCommit);
+    await fs.appendFile(
+      path.join(tmpRepo.dbPath, '.agents', 'skills', 'gitnexus-cli', 'SKILL.md'),
+      '\nmanual drift\n',
+      'utf-8',
+    );
+
+    await statusCommand();
+
+    const output = logs.join('\n');
+    expect(output).toContain('managed skills stale');
+    expect(output).toContain('gitnexus agent-context plan --path');
+  });
+
+  it('reports malformed AGENTS markers and symlinked managed skills as stale', async () => {
+    const currentCommit = execSync('git rev-parse HEAD', {
+      cwd: tmpRepo.dbPath,
+      encoding: 'utf-8',
+    }).trim();
+    await writeHealthyMeta(currentCommit, 2);
+    await writeManagedSkills(currentCommit);
+    const agentsPath = path.join(tmpRepo.dbPath, 'AGENTS.md');
+    const healthyAgents = await fs.readFile(agentsPath, 'utf-8');
+    await fs.writeFile(
+      agentsPath,
+      `${healthyAgents}\n<!-- gitnexus:start -->\n<!-- gitnexus:end -->\n`,
+      'utf-8',
+    );
+
+    await statusCommand();
+    expect(logs.join('\n')).toContain('Agent helpers: AGENTS.md stale');
+
+    logs.length = 0;
+    await fs.writeFile(agentsPath, healthyAgents, 'utf-8');
+    const skillPath = path.join(tmpRepo.dbPath, '.agents', 'skills', 'gitnexus-cli', 'SKILL.md');
+    const copyPath = path.join(tmpRepo.dbPath, '.gitnexus', 'gitnexus-cli-copy.md');
+    await fs.copyFile(skillPath, copyPath);
+    await fs.rm(skillPath);
+    await fs.symlink(copyPath, skillPath);
+    await statusCommand();
+    expect(logs.join('\n')).toContain('managed skills missing');
+    expect(logs.join('\n')).toContain('gitnexus agent-context plan');
+  });
+
+  it('reports generated skills stale independently from current managed skills', async () => {
+    const currentCommit = execSync('git rev-parse HEAD', {
+      cwd: tmpRepo.dbPath,
+      encoding: 'utf-8',
+    }).trim();
+
+    await writeManagedSkills(currentCommit);
+    const skillsDir = path.join(tmpRepo.dbPath, '.agents', 'skills');
+    const generatedDir = path.join(skillsDir, 'gitnexus-generated-auth');
+    await fs.mkdir(generatedDir, { recursive: true });
+    await fs.writeFile(path.join(generatedDir, 'SKILL.md'), '# Auth\n', 'utf-8');
+    await fs.writeFile(path.join(skillsDir, '.gitnexus-generated-commit'), 'old-commit\n', 'utf-8');
+    await fs.writeFile(
+      path.join(tmpRepo.dbPath, 'AGENTS.md'),
+      `<!-- gitnexus:start -->\n${GITNEXUS_CONTEXT_VERSION_MARKER}\nctx\n<!-- gitnexus:end -->\n`,
+      'utf-8',
+    );
+    await writeHealthyMeta({
+      repoPath: tmpRepo.dbPath,
+      lastCommit: currentCommit,
+      indexedAt: '2026-05-04T00:00:00.000Z',
+      stats: { embeddings: 9 },
+    });
+
+    await statusCommand();
+
+    const output = logs.join('\n');
+    expect(output).toContain(
+      'Agent helpers: AGENTS.md current, managed skills current, generated skills stale',
+    );
     expect(output).toContain('Recommendation: run gitnexus analyze --force --skills');
   });
 });

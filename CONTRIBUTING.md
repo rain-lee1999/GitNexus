@@ -109,7 +109,12 @@ If you use coding agents, follow project context files (e.g. `AGENTS.md`, `CLAUD
 
 ## Releases
 
-Two publish workflows ship `gitnexus` to npm:
+Two publish workflows ship `gitnexus` to npm. Registry publication is deliberately
+hard-gated to `github.repository == 'abhigyanpatwari/GitNexus'`: forks may run
+PR CI and manual Docker dry-runs, but a fork `main` push or `v*` tag cannot mint
+RC tags, publish npm packages, push/sign images, or create a release through
+these workflows. Fork maintainers create fork-only GitHub releases explicitly
+after CI; those releases do not claim npm or container artifacts.
 
 - **Stable** (`.github/workflows/publish.yml`) — triggered by pushing any `v*`
   tag. Publishes to the `latest` dist-tag with a changelog-backed GitHub
@@ -150,16 +155,9 @@ Two publish workflows ship `gitnexus` to npm:
   are live) but the `docker` job subsequently fails (e.g. GHCR flakiness),
   the npm RC is already published and the `rc/<HEAD_SHA>` marker is in place.
   Re-running `release-candidate.yml` with `force: true` will abort at the
-  "Version already exists on npm" guard. To recover without cutting a new RC:
-
-  ```bash
-  # 1. Manually trigger only the docker workflow, passing the existing RC tag:
-  gh workflow run docker.yml --ref main -f tag=v<RC_VERSION>
-  # (requires a workflow_dispatch trigger on docker.yml — see note below)
-  ```
-
-  Because `docker.yml` intentionally has no `workflow_dispatch` (images are
-  tag-driven by design), the practical recovery options are:
+  "Version already exists on npm" guard. Manual `docker.yml` dispatch is
+  deliberately build-only and cannot publish an existing RC tag. The practical
+  recovery options are:
   - Wait for the next commit on `main`, which will cut a new RC that includes
     the Docker build.
   - Manually run `docker build` + `docker push` locally and sign with Cosign

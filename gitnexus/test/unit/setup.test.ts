@@ -2,6 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const packageSpecifier = `gitnexus@${(require('../../package.json') as { version: string }).version}`;
 
 const execFileMock = vi.fn((...args: any[]) => {
   const callback = args.at(-1);
@@ -25,6 +29,7 @@ describe('setupClaudeCode', () => {
   let tempHome: string;
   let originalHome: string | undefined;
   let originalUserProfile: string | undefined;
+  let originalCodexHome: string | undefined;
   let platformDescriptor: PropertyDescriptor | undefined;
 
   const setPlatform = (value: NodeJS.Platform) => {
@@ -40,9 +45,11 @@ describe('setupClaudeCode', () => {
 
     originalHome = process.env.HOME;
     originalUserProfile = process.env.USERPROFILE;
+    originalCodexHome = process.env.CODEX_HOME;
     tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-claude-setup-'));
     process.env.HOME = tempHome;
     process.env.USERPROFILE = tempHome;
+    delete process.env.CODEX_HOME;
 
     // Only create ~/.claude — no other editor directories so their
     // setup functions skip and don't pollute assertions.
@@ -61,6 +68,8 @@ describe('setupClaudeCode', () => {
 
     process.env.HOME = originalHome;
     process.env.USERPROFILE = originalUserProfile;
+    if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = originalCodexHome;
     await fs.rm(tempHome, { recursive: true, force: true });
   });
 
@@ -75,7 +84,7 @@ describe('setupClaudeCode', () => {
 
     expect(config.mcpServers.gitnexus).toEqual({
       command: 'cmd',
-      args: ['/c', 'npx', '-y', 'gitnexus@latest', 'mcp'],
+      args: ['/c', 'npx', '-y', packageSpecifier, 'mcp'],
     });
   });
 
@@ -90,7 +99,7 @@ describe('setupClaudeCode', () => {
 
     expect(config.mcpServers.gitnexus).toEqual({
       command: 'npx',
-      args: ['-y', 'gitnexus@latest', 'mcp'],
+      args: ['-y', packageSpecifier, 'mcp'],
     });
   });
 
@@ -182,7 +191,7 @@ describe('setupClaudeCode', () => {
 
     expect(config.mcpServers.gitnexus).toEqual({
       command: 'npx',
-      args: ['-y', 'gitnexus@latest', 'mcp'],
+      args: ['-y', packageSpecifier, 'mcp'],
     });
   });
 });

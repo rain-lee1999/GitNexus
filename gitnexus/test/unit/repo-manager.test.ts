@@ -4,10 +4,11 @@
  * Tests: getStoragePath, getStoragePaths, readRegistry, registerRepo, unregisterRepo
  * Covers hardening fixes #29 (API key file permissions) and #30 (case-insensitive paths on Windows)
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'path';
 import os from 'os';
 import fs from 'fs/promises';
+import { createHash } from 'crypto';
 import {
   getStoragePath,
   getStoragePaths,
@@ -23,12 +24,58 @@ import {
   RegistryNotFoundError,
   RegistryAmbiguousTargetError,
   UnsafeStoragePathError,
+  GitNexusLockTimeoutError,
+  acquireFileLock,
+  getAnalysisLockPath,
+  getGlobalRegistryLockPath,
+  withGlobalRegistryLock,
   type RegistryEntry,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
 import { parseRepoNameFromUrl, getInferredRepoName } from '../../src/storage/git.js';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { createTempDir } from '../helpers/test-db.js';
+
+const runExternalLockContender = async (
+  lockPath: string,
+  waitTimeoutMs: number,
+): Promise<{ code: number | null; stdout: string; stderr: string }> => {
+  const script = `
+    import { acquireFileLock } from './src/storage/repo-manager.ts';
+    try {
+      const lock = await acquireFileLock(process.argv[1], {
+        waitTimeoutMs: Number(process.argv[2]),
+        staleAfterMs: 10000,
+        retryDelayMs: 5,
+      });
+      await lock.release();
+      process.stdout.write('acquired\\n');
+    } catch (error) {
+      process.stderr.write(error instanceof Error ? error.name : String(error));
+      process.exitCode = 2;
+    }
+  `;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      ['--import', 'tsx', '--input-type=module', '--eval', script, lockPath, String(waitTimeoutMs)],
+      { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf-8');
+    child.stderr.setEncoding('utf-8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.once('error', reject);
+    child.once('close', (code) => resolve({ code, stdout, stderr }));
+  });
+};
 
 // ─── getStoragePath ──────────────────────────────────────────────────
 
@@ -60,6 +107,321 @@ describe('getStoragePaths', () => {
     const paths = getStoragePaths('/home/user/project');
     expect(paths.lbugPath.startsWith(paths.storagePath)).toBe(true);
     expect(paths.metaPath.startsWith(paths.storagePath)).toBe(true);
+  });
+});
+
+// ─── Cross-process writer locks ──────────────────────────────────────
+
+describe('GitNexus writer locks', () => {
+  let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+  let savedGitnexusHome: string | undefined;
+
+  beforeEach(async () => {
+    tmpHome = await createTempDir('gitnexus-lock-home-');
+    tmpRepo = await createTempDir('gitnexus-lock-repo-');
+    savedGitnexusHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+  });
+
+  afterEach(async () => {
+    if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
+    else process.env.GITNEXUS_HOME = savedGitnexusHome;
+    await tmpHome.cleanup();
+    await tmpRepo.cleanup();
+  });
+
+  it('makes same-worktree analysis acquisition mutually exclusive', async () => {
+    const lockPath = getAnalysisLockPath(tmpRepo.dbPath);
+    const first = await acquireFileLock(lockPath, {
+      waitTimeoutMs: 50,
+      staleAfterMs: 10_000,
+      retryDelayMs: 5,
+    });
+
+    await expect(
+      acquireFileLock(lockPath, {
+        waitTimeoutMs: 25,
+        staleAfterMs: 10_000,
+        retryDelayMs: 5,
+      }),
+    ).rejects.toBeInstanceOf(GitNexusLockTimeoutError);
+
+    await first.release();
+    const second = await acquireFileLock(lockPath, {
+      waitTimeoutMs: 50,
+      staleAfterMs: 10_000,
+      retryDelayMs: 5,
+    });
+    await second.release();
+  });
+
+  it('anchors each worktree lock under canonical GITNEXUS_HOME, outside removable index storage', () => {
+    const worktreeKey = createHash('sha256').update(canonicalizePath(tmpRepo.dbPath)).digest('hex');
+    const lockPath = getAnalysisLockPath(tmpRepo.dbPath);
+
+    expect(lockPath).toBe(
+      path.join(
+        canonicalizePath(tmpHome.dbPath),
+        'refresh',
+        'analysis',
+        `${worktreeKey}.analysis.lock`,
+      ),
+    );
+    expect(lockPath.startsWith(getStoragePath(tmpRepo.dbPath))).toBe(false);
+  });
+
+  it('keeps a live analysis lock when clean removes the worktree index directory', async () => {
+    const lockPath = getAnalysisLockPath(tmpRepo.dbPath);
+    const storagePath = getStoragePath(tmpRepo.dbPath);
+    await fs.mkdir(path.join(storagePath, 'refresh'), { recursive: true });
+
+    const first = await acquireFileLock(lockPath, {
+      waitTimeoutMs: 50,
+      staleAfterMs: 10_000,
+      retryDelayMs: 5,
+    });
+    try {
+      await fs.rm(storagePath, { recursive: true, force: true });
+      await expect(fs.access(lockPath)).resolves.toBeUndefined();
+      await expect(
+        acquireFileLock(lockPath, {
+          waitTimeoutMs: 25,
+          staleAfterMs: 10_000,
+          retryDelayMs: 5,
+        }),
+      ).rejects.toBeInstanceOf(GitNexusLockTimeoutError);
+    } finally {
+      await first.release();
+    }
+  });
+
+  it('coordinates a contender in a separate Node process', async () => {
+    const lockPath = getAnalysisLockPath(tmpRepo.dbPath);
+    const first = await acquireFileLock(lockPath, {
+      waitTimeoutMs: 100,
+      staleAfterMs: 10_000,
+      retryDelayMs: 5,
+    });
+
+    try {
+      const blocked = await runExternalLockContender(lockPath, 100);
+      expect(blocked.code).toBe(2);
+      expect(blocked.stderr).toContain('GitNexusLockTimeoutError');
+    } finally {
+      await first.release();
+    }
+
+    const acquired = await runExternalLockContender(lockPath, 500);
+    expect(acquired.code).toBe(0);
+    expect(acquired.stdout).toContain('acquired');
+  });
+
+  it('allows different worktrees to hold their independent analysis locks concurrently', async () => {
+    const otherRepo = await createTempDir('gitnexus-lock-other-worktree-');
+    const first = await acquireFileLock(getAnalysisLockPath(tmpRepo.dbPath), {
+      waitTimeoutMs: 50,
+      staleAfterMs: 10_000,
+      retryDelayMs: 5,
+    });
+
+    try {
+      const second = await acquireFileLock(getAnalysisLockPath(otherRepo.dbPath), {
+        waitTimeoutMs: 50,
+        staleAfterMs: 10_000,
+        retryDelayMs: 5,
+      });
+      await second.release();
+    } finally {
+      await first.release();
+      await otherRepo.cleanup();
+    }
+  });
+
+  it('recovers an expired lock without PID inspection', async () => {
+    const lockPath = getAnalysisLockPath(tmpRepo.dbPath);
+    await fs.mkdir(lockPath, { recursive: true });
+    await fs.writeFile(
+      path.join(lockPath, 'owner.json'),
+      JSON.stringify({ token: 'crashed-owner', acquiredAt: '2020-01-01T00:00:00.000Z' }),
+      'utf-8',
+    );
+    const old = new Date(Date.now() - 60_000);
+    await fs.utimes(lockPath, old, old);
+
+    const recovered = await acquireFileLock(lockPath, {
+      waitTimeoutMs: 100,
+      staleAfterMs: 10,
+      retryDelayMs: 5,
+    });
+
+    const owner = JSON.parse(await fs.readFile(path.join(lockPath, 'owner.json'), 'utf-8')) as {
+      token: string;
+    };
+    expect(owner.token).not.toBe('crashed-owner');
+    await recovered.release();
+  });
+
+  it('never deletes a fresh replacement while recovering an ownerless stale lock', async () => {
+    const lockPath = getAnalysisLockPath(tmpRepo.dbPath);
+    await fs.mkdir(lockPath, { recursive: true });
+    const old = new Date(Date.now() - 60_000);
+    await fs.utimes(lockPath, old, old);
+
+    const originalRename = fs.rename.bind(fs);
+    let injectedReplacement = false;
+    vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+      if (!injectedReplacement && String(from) === lockPath) {
+        injectedReplacement = true;
+        await originalRename(lockPath, `${lockPath}.stalled-owner`);
+        await fs.mkdir(lockPath);
+        await fs.writeFile(
+          path.join(lockPath, 'owner.json'),
+          JSON.stringify({
+            token: 'fresh-replacement',
+            acquiredAt: new Date().toISOString(),
+            pid: process.pid,
+            hostname: os.hostname(),
+          }),
+          'utf-8',
+        );
+      }
+      await originalRename(from, to);
+    });
+
+    await expect(
+      acquireFileLock(lockPath, {
+        waitTimeoutMs: 30,
+        staleAfterMs: 10_000,
+        retryDelayMs: 2,
+      }),
+    ).rejects.toBeInstanceOf(GitNexusLockTimeoutError);
+
+    expect(injectedReplacement).toBe(true);
+    const owner = JSON.parse(await fs.readFile(path.join(lockPath, 'owner.json'), 'utf-8')) as {
+      token: string;
+    };
+    expect(owner.token).toBe('fresh-replacement');
+  });
+
+  it('immediately recovers a fresh same-host lock whose owner PID is confirmed dead', async () => {
+    const lockPath = getAnalysisLockPath(tmpRepo.dbPath);
+    await fs.mkdir(lockPath, { recursive: true });
+    await fs.writeFile(
+      path.join(lockPath, 'owner.json'),
+      JSON.stringify({
+        token: 'crashed-local-owner',
+        acquiredAt: new Date().toISOString(),
+        pid: 2_147_483_647,
+        hostname: os.hostname(),
+      }),
+      'utf-8',
+    );
+
+    const recovered = await acquireFileLock(lockPath, {
+      waitTimeoutMs: 100,
+      staleAfterMs: 60_000,
+      retryDelayMs: 5,
+    });
+
+    const owner = JSON.parse(await fs.readFile(path.join(lockPath, 'owner.json'), 'utf-8')) as {
+      token: string;
+      pid?: number;
+      hostname?: string;
+    };
+    expect(owner.token).not.toBe('crashed-local-owner');
+    expect(owner.pid).toBe(process.pid);
+    expect(owner.hostname).toBe(os.hostname());
+    await recovered.release();
+  });
+
+  it('does not reclaim a fresh same-host lock held by a live PID', async () => {
+    const lockPath = getAnalysisLockPath(tmpRepo.dbPath);
+    await fs.mkdir(lockPath, { recursive: true });
+    await fs.writeFile(
+      path.join(lockPath, 'owner.json'),
+      JSON.stringify({
+        token: 'live-local-owner',
+        acquiredAt: new Date().toISOString(),
+        pid: process.pid,
+        hostname: os.hostname(),
+      }),
+      'utf-8',
+    );
+
+    await expect(
+      acquireFileLock(lockPath, {
+        waitTimeoutMs: 25,
+        staleAfterMs: 60_000,
+        retryDelayMs: 5,
+      }),
+    ).rejects.toBeInstanceOf(GitNexusLockTimeoutError);
+  });
+
+  it('keeps a fresh foreign-host lock on its heartbeat lease even when its PID is absent locally', async () => {
+    const lockPath = getAnalysisLockPath(tmpRepo.dbPath);
+    await fs.mkdir(lockPath, { recursive: true });
+    await fs.writeFile(
+      path.join(lockPath, 'owner.json'),
+      JSON.stringify({
+        token: 'foreign-host-owner',
+        acquiredAt: new Date().toISOString(),
+        pid: 2_147_483_647,
+        hostname: `${os.hostname()}-other-host`,
+      }),
+      'utf-8',
+    );
+
+    await expect(
+      acquireFileLock(lockPath, {
+        waitTimeoutMs: 25,
+        staleAfterMs: 60_000,
+        retryDelayMs: 5,
+      }),
+    ).rejects.toBeInstanceOf(GitNexusLockTimeoutError);
+  });
+
+  it('does not treat EPERM as evidence that a fresh same-host owner is dead', async () => {
+    const lockPath = getAnalysisLockPath(tmpRepo.dbPath);
+    await fs.mkdir(lockPath, { recursive: true });
+    await fs.writeFile(
+      path.join(lockPath, 'owner.json'),
+      JSON.stringify({
+        token: 'permission-denied-owner',
+        acquiredAt: new Date().toISOString(),
+        pid: 2_147_483_647,
+        hostname: os.hostname(),
+      }),
+      'utf-8',
+    );
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+      const error = Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+      throw error;
+    });
+
+    try {
+      await expect(
+        acquireFileLock(lockPath, {
+          waitTimeoutMs: 25,
+          staleAfterMs: 60_000,
+          retryDelayMs: 5,
+        }),
+      ).rejects.toBeInstanceOf(GitNexusLockTimeoutError);
+    } finally {
+      killSpy.mockRestore();
+    }
+  });
+
+  it('uses a GITNEXUS_HOME-scoped global registry lock and permits nested registry work', async () => {
+    expect(getGlobalRegistryLockPath()).toBe(
+      path.join(canonicalizePath(tmpHome.dbPath), 'refresh', 'registry.lock'),
+    );
+
+    await expect(
+      withGlobalRegistryLock(async () =>
+        withGlobalRegistryLock(async () => 'nested registry transaction'),
+      ),
+    ).resolves.toBe('nested registry transaction');
   });
 });
 
@@ -331,6 +693,17 @@ describe('registerRepo name override + collision guard (#829)', () => {
     // user via resolveRepo / list output, not hidden at the storage layer.
     const paths = entries.map((e) => path.resolve(e.path)).sort();
     expect(paths).toEqual([path.resolve(tmpRepoA.dbPath), path.resolve(tmpRepoB.dbPath)].sort());
+  });
+
+  it('serializes concurrent registry upserts without losing either repo', async () => {
+    await Promise.all([
+      registerRepo(tmpRepoA.dbPath, meta, { name: 'concurrent-a' }),
+      registerRepo(tmpRepoB.dbPath, meta, { name: 'concurrent-b' }),
+    ]);
+
+    const entries = await listRegisteredRepos();
+    expect(entries).toHaveLength(2);
+    expect(entries.map((entry) => entry.name).sort()).toEqual(['concurrent-a', 'concurrent-b']);
   });
 
   it('basename collisions without an explicit --name still register silently (backward-compat)', async () => {

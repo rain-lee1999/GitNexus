@@ -65,4 +65,34 @@ describe('analyzeCommand worker timeout validation', () => {
     expect(process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS).toBe('2000');
     expect(runFullAnalysisMock).toHaveBeenCalled();
   });
+
+  it('forwards --index-only to the shared orchestrator', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    runFullAnalysisMock.mockResolvedValue({
+      repoName: 'repo',
+      repoPath: '/repo',
+      stats: {},
+      alreadyUpToDate: true,
+    });
+
+    await analyzeCommand(undefined, { indexOnly: true });
+
+    expect(runFullAnalysisMock).toHaveBeenCalledWith(
+      '/repo',
+      expect.objectContaining({ indexOnly: true }),
+      expect.any(Object),
+    );
+  });
+
+  it('rejects --index-only combined with --skills before analysis starts', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, { indexOnly: true, skills: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(errorSpy).toHaveBeenCalledWith('  --index-only cannot be combined with --skills.\n');
+    expect(runFullAnalysisMock).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
 });

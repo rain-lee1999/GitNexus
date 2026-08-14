@@ -30,8 +30,8 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 ### Stale graph after edits
 
 - **Trigger:** MCP warns index is behind `HEAD`, or search doesn't match latest commit.
-- **Do:** `npx gitnexus analyze` (plus `--embeddings` if used).
-- **Why:** Tools query LadybugDB from last analyze; git changes are invisible until re-indexed.
+- **Do:** Run `gitnexus refresh status --path <absolute-worktree>`, then read-only `gitnexus refresh plan --path <absolute-worktree>`. Only when every listed target is writable or a scoped approval covers it, run `gitnexus refresh init` (once per worktree) and `gitnexus refresh ensure`; add `--install-git-hooks` only in a primary checkout using conventional hooks. Without that authority, use the stale graph only with a warning, plus `detect_changes` and source inspection. Use `agent-context plan/apply` for managed AGENTS/skills; use direct `analyze` for embeddings or an explicit full repair.
+- **Why:** `index-only` avoids regenerating agent assets but still writes `.gitnexus/`, applicable Git metadata, and `GITNEXUS_HOME`. The coordinator serializes one writer per worktree; it cannot infer or obtain sandbox authority.
 
 ### Embeddings vanished after analyze
 
@@ -45,17 +45,17 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 - **Do:** `npx gitnexus analyze` in the target repo; verify `npx gitnexus list` shows it.
 - **Why:** MCP discovers repos via `~/.gitnexus/registry.json`, populated by analyze.
 
-### Wrong repo in multi-repo setups
+### Wrong worktree in multi-worktree setups
 
-- **Trigger:** Query/impact results belong to another project.
-- **Do:** Call `list_repos`, then pass `repo` on subsequent tools.
-- **Why:** Default target is ambiguous when multiple repos are registered.
+- **Trigger:** Query/impact results belong to another checkout or worktree.
+- **Do:** Call `list_repos`, then pass `repo` as the absolute target worktree path on freshness-gated graph tools.
+- **Why:** The Codex gate intentionally rejects aliases: only an absolute path guarantees that the graph and current Git state belong to the same checkout.
 
 ### LadybugDB lock / "database busy"
 
 - **Trigger:** Errors opening `.gitnexus/lbug` while MCP and analyze both run.
-- **Do:** Stop overlapping processes (one writer at a time). Retry analyze or restart MCP.
-- **Why:** Embedded DB expects single-process ownership.
+- **Do:** Use `gitnexus refresh ensure --path <absolute-worktree>` instead of launching a second `analyze`. If a non-GitNexus writer is still active, let it finish before retrying.
+- **Why:** The coordinator owns one writer lock per worktree; the embedded DB still expects single-process ownership.
 
 ---
 

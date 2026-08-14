@@ -4,6 +4,27 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-08-14
+
+### Added
+
+- **Codex-native integration** — a bundled local Codex marketplace/plugin now ships pinned stdio MCP configuration, a workflow skill, and trusted-on-review `PreToolUse` / `PostToolUse` hooks. MCP initialization also returns a self-contained GitNexus workflow.
+- **Codex setup diagnostics** — setup supports `CODEX_HOME` plus user/project scopes, repairs stale MCP TOML entries, and `gitnexus doctor codex` checks the CLI, plugin, skills, registration, and protocol handshake.
+
+### Changed
+
+- **Safe-by-default repository assets** — plain `analyze` now updates graph/index/registry state without writing tracked agent assets. `agent-context plan/apply` is the reviewed path for `AGENTS.md` and native direct-child `.agents/skills/gitnexus-*`; legacy `analyze --skills` remains an explicit generated-skills compatibility path. Fixed skills use bundled-content freshness while generated skills retain index-commit freshness.
+- **Remote HTTP MCP is fail-closed** — non-loopback binds require a bearer token or an explicit insecure opt-in, expose read-only tools by default, and enforce request, rate, and session limits.
+- **MCP documentation is contract-tested** against the 13 tools exposed by the server.
+
+### Fixed
+
+- **Windows source builds** — Build orchestration now invokes TypeScript's JavaScript entrypoint with the current Node executable instead of trying to execute a `.cmd` shim directly.
+- **Optional-parser CI gating** — All Kotlin suites that exercise the declared optional native parser now follow the existing Swift capability contract; parser-supported jobs still run all 210 parser-dependent assertions.
+- **Windows command and fixture portability** — Refresh, update, and Codex hooks now launch required `.cmd`/`.bat` entrypoints through explicit `ComSpec` argv without `shell: true`, reject cmd.exe metacharacters fail closed, and use executable cross-platform Node fixtures.
+- **Heap-restart JSON forwarding** — refresh supervision now preserves exactly one machine-parseable JSON document and the child exit status when a command re-executes with a larger heap.
+- **Fork-safe release automation** — forks retain PR CI and manual Docker dry-runs, but RC, npm, image push, signing, and attestation paths fail closed outside `abhigyanpatwari/GitNexus`.
+
 ## [1.6.3] - 2026-04-24
 
 ### Added

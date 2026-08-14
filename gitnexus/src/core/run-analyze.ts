@@ -20,6 +20,7 @@ import {
   closeLbug,
   loadCachedEmbeddings,
 } from './lbug/lbug-adapter.js';
+import type { ExtensionInstallPolicy } from './lbug/extension-loader.js';
 import { createSearchFTSIndexes } from './search/fts-indexes.js';
 import {
   getStoragePaths,
@@ -35,10 +36,10 @@ import {
   createTempLbugPath,
   promoteLbugDatabase,
   getIndexHealth,
+  withAnalysisLock,
 } from '../storage/repo-manager.js';
 import { getCurrentCommit, getRemoteUrl, hasGitDir, getInferredRepoName } from '../storage/git.js';
 import type { CachedEmbedding } from './embeddings/types.js';
-import { generateAIContextFiles } from '../cli/ai-context.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
 
@@ -70,10 +71,44 @@ export interface AnalyzeOptions {
    */
   dropEmbeddings?: boolean;
   skipGit?: boolean;
-  /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
+  /**
+   * Deprecated compatibility signal retained for callers that already pass it.
+   * All analysis now stops at graph/index state and never writes AGENTS.md or
+   * .agents/skills; explicit context writes live under `agent-context apply`.
+   */
+  indexOnly?: boolean;
+  /**
+   * @deprecated Core analysis no longer writes AGENTS.md. Retained so
+   * programmatic callers compiled against the pre-split API keep type compatibility.
+   */
   skipAgentsMd?: boolean;
-  /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
+  /**
+   * @deprecated Core analysis no longer renders tracked context or statistics.
+   * Retained as an ignored compatibility field for programmatic callers.
+   */
   noStats?: boolean;
+  /**
+   * Keep a coordinator refresh within its declared local graph/registry
+   * write surface. It preserves existing vectors but never invokes an
+   * embedding provider or model cache to top up changed nodes.
+   */
+  suppressEmbeddingGeneration?: boolean;
+  /**
+   * Restrict optional LadybugDB extension lifecycle for this analysis. The
+   * refresh coordinator uses `load-only` so a graph rebuild never spawns an
+   * extension installer or populates external extension caches; direct
+   * `analyze` intentionally leaves this undefined and keeps the `auto`
+   * default.
+   */
+  extensionInstallPolicy?: ExtensionInstallPolicy;
+  /**
+   * Force the ingestion pipeline to parse sequentially instead of creating a
+   * `worker_threads` pool. This is an explicit caller-level safety control:
+   * automatic refreshers use it when native parser worker teardown is less
+   * reliable than a slower, in-process parse. Normal `analyze` keeps its
+   * worker-pool default.
+   */
+  skipWorkers?: boolean;
   /**
    * User-provided alias for the registry `name` (#829). When set,
    * forwarded to `registerRepo` so the indexed repo is stored under
@@ -92,7 +127,16 @@ export interface AnalyzeOptions {
 }
 
 export interface AnalyzeResult {
+  /**
+   * The registry-facing name returned by registerRepo(). This may be a
+   * coordinator alias and remains the name callers use for registry lookups.
+   */
   repoName: string;
+  /**
+   * Human-readable display name available to explicit downstream context or
+   * legacy skill generation, independent from a preserved coordinator alias.
+   */
+  contextName: string;
   repoPath: string;
   stats: {
     files?: number;
@@ -132,6 +176,42 @@ export const PHASE_LABELS: Record<string, string> = {
   done: 'Done',
 };
 
+/**
+ * Choose the human-readable name exposed to explicit downstream context.
+ *
+ * A refresh coordinator registers every worktree under a collision-resistant
+ * alias. That alias is an internal registry key, not a project display name,
+ * and must not leak into downstream context. An explicit `analyze --name`
+ * remains a display override for the legacy `--skills` path.
+ */
+export const getContextProjectName = (repoPath: string, explicitName?: string): string =>
+  explicitName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath);
+
+// LadybugDB's writable adapter owns module-level `db`, `conn`, and
+// `currentDbPath` state. The per-worktree filesystem lock below keeps
+// separate processes from rebuilding the same worktree concurrently, but it
+// cannot stop two different worktrees handled by this *same* Node process
+// from switching that singleton underneath each other. Keep the full
+// analysis lifecycle in one process-local FIFO session. This intentionally
+// has no filesystem component: other Node processes and their worktrees can
+// still run in parallel.
+let analysisSessionTail: Promise<void> = Promise.resolve();
+
+const withAnalysisSession = async <T>(operation: () => Promise<T>): Promise<T> => {
+  const previous = analysisSessionTail;
+  let release: (() => void) | undefined;
+  analysisSessionTail = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release?.();
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Main orchestrator
 // ---------------------------------------------------------------------------
@@ -141,7 +221,8 @@ export const PHASE_LABELS: Record<string, string> = {
  *
  * This is the shared core extracted from the CLI `analyze` command. It
  * handles: pipeline execution, LadybugDB loading, FTS indexing, embedding
- * generation, metadata persistence, and AI context file generation.
+ * generation, metadata persistence, and registry finalization. Tracked agent
+ * context is intentionally owned by the explicit CLI context lifecycle.
  *
  * The function communicates progress and log messages exclusively through
  * the {@link AnalyzeCallbacks} interface — it never writes to stdout/stderr
@@ -152,11 +233,36 @@ export async function runFullAnalysis(
   options: AnalyzeOptions,
   callbacks: AnalyzeCallbacks,
 ): Promise<AnalyzeResult> {
+  // The whole pipeline is mutually exclusive per worktree. Registry mutation
+  // is independently serialized inside registerRepo(), so different worktrees
+  // can parse in separate Node processes concurrently and contend only for
+  // the short global registry read-modify-write transaction at finalization.
+  // In a single process, however, the LadybugDB adapter has one mutable native
+  // session. Nest the process-local session inside the worktree lock so its
+  // init/load/close lifecycle cannot overlap another worktree's lifecycle.
+  return withAnalysisLock(repoPath, () =>
+    withAnalysisSession(() => runFullAnalysisUnlocked(repoPath, options, callbacks)),
+  );
+}
+
+async function runFullAnalysisUnlocked(
+  repoPath: string,
+  options: AnalyzeOptions,
+  callbacks: AnalyzeCallbacks,
+): Promise<AnalyzeResult> {
   const log = (msg: string) => callbacks.onLog?.(msg);
   const progress = (phase: string, percent: number, message: string) =>
     callbacks.onProgress(phase, percent, message);
 
   const { storagePath, lbugPath } = getStoragePaths(repoPath);
+  const contextName = getContextProjectName(repoPath, options.registryName);
+  // Keep the restriction with every writable LadybugDB lifecycle in this
+  // analysis, including the existing-index embedding cache read before the
+  // temporary rebuild database is opened.
+  const lbugInitOptions =
+    options.extensionInstallPolicy === undefined
+      ? undefined
+      : { extensionInstallPolicy: options.extensionInstallPolicy };
 
   // Clean up stale KuzuDB files from before the LadybugDB migration.
   const kuzuResult = await cleanupOldKuzuFiles(storagePath);
@@ -181,7 +287,8 @@ export async function runFullAnalysis(
       } else {
         await ensureGitNexusIgnored(repoPath);
         return {
-          repoName: options.registryName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath),
+          repoName: options.registryName ?? contextName,
+          contextName,
           repoPath,
           stats: existingMeta.stats ?? {},
           alreadyUpToDate: true,
@@ -238,7 +345,7 @@ export async function runFullAnalysis(
   if (shouldLoadCache && existingMeta) {
     try {
       progress('embeddings', 0, 'Caching embeddings...');
-      await initLbug(lbugPath);
+      await initLbug(lbugPath, lbugInitOptions);
       const cached = await loadCachedEmbeddings();
       cachedEmbeddingNodeIds = cached.embeddingNodeIds;
       cachedEmbeddings = cached.embeddings;
@@ -263,12 +370,18 @@ export async function runFullAnalysis(
   }
 
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
-  const pipelineResult = await runPipelineFromRepo(repoPath, (p) => {
-    const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
-    const scaled = Math.round(p.percent * 0.6);
-    const message = p.detail ? `${p.message || phaseLabel} (${p.detail})` : p.message || phaseLabel;
-    progress(p.phase, scaled, message);
-  });
+  const pipelineResult = await runPipelineFromRepo(
+    repoPath,
+    (p) => {
+      const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
+      const scaled = Math.round(p.percent * 0.6);
+      const message = p.detail
+        ? `${p.message || phaseLabel} (${p.detail})`
+        : p.message || phaseLabel;
+      progress(p.phase, scaled, message);
+    },
+    options.skipWorkers ? { skipWorkers: true } : undefined,
+  );
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
   progress('lbug', 60, 'Loading into LadybugDB...');
@@ -280,7 +393,7 @@ export async function runFullAnalysis(
   const tempLbugPath = createTempLbugPath(storagePath);
   await cleanupLbugArtifacts(tempLbugPath);
 
-  await initLbug(tempLbugPath);
+  await initLbug(tempLbugPath, lbugInitOptions);
   try {
     // All work after initLbug is wrapped in try/finally to ensure closeLbug()
     // is called even if an error occurs — the module-level singleton DB handle
@@ -452,11 +565,10 @@ export async function runFullAnalysis(
     // pipeline `force` above. The CLI maps it from
     // `--allow-duplicate-name` only; `--force` and `--skills` both
     // trigger pipeline re-run but never bypass the registry guard.
-    // The returned name is the one actually written to the registry
-    // (after applying the precedence chain in registerRepo) — reuse it
-    // so AGENTS.md / skill files reference the same name MCP clients
-    // will look up (#979).
-    const projectName = await registerRepo(repoPath, meta, {
+    // Keep the registry-facing name separate from generated context. A
+    // coordinator alias is needed to distinguish worktrees, but it must not
+    // leak into tracked AGENTS.md or generated skills on a later full analyze.
+    const registryName = await registerRepo(repoPath, meta, {
       name: options.registryName,
       allowDuplicateName: options.allowDuplicateName,
     });
@@ -465,44 +577,14 @@ export async function runFullAnalysis(
     await ensureGitNexusIgnored(repoPath);
     await clearAnalysisIncompleteMarker(storagePath);
 
-    // ── Generate AI context files (best-effort) ───────────────────────
-    let aggregatedClusterCount = 0;
-    if (pipelineResult.communityResult?.communities) {
-      const groups = new Map<string, number>();
-      for (const c of pipelineResult.communityResult.communities) {
-        const label = c.heuristicLabel || c.label || 'Unknown';
-        groups.set(label, (groups.get(label) || 0) + c.symbolCount);
-      }
-      aggregatedClusterCount = Array.from(groups.values()).filter((count) => count >= 5).length;
-    }
-
-    try {
-      await generateAIContextFiles(
-        repoPath,
-        storagePath,
-        projectName,
-        {
-          files: pipelineResult.totalFileCount,
-          nodes: stats.nodes,
-          edges: stats.edges,
-          communities: pipelineResult.communityResult?.stats.totalCommunities,
-          clusters: aggregatedClusterCount,
-          processes: pipelineResult.processResult?.stats.totalProcesses,
-        },
-        undefined,
-        { skipAgentsMd: options.skipAgentsMd, noStats: options.noStats },
-      );
-    } catch {
-      // Best-effort — don't fail the entire analysis for context file issues
-    }
-
     // ── Close LadybugDB ──────────────────────────────────────────────
     await closeLbug();
 
     progress('done', 100, 'Done');
 
     return {
-      repoName: projectName,
+      repoName: registryName,
+      contextName,
       repoPath,
       stats: meta.stats,
       pipelineResult,

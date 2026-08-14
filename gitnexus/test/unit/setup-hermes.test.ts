@@ -3,6 +3,10 @@ import { EventEmitter } from 'events';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const packageSpecifier = `gitnexus@${(require('../../package.json') as { version: string }).version}`;
 
 const execFileMock = vi.fn((...args: any[]) => {
   const callback = args.at(-1);
@@ -13,8 +17,9 @@ const execFileMock = vi.fn((...args: any[]) => {
 
 const execFileSyncMock = vi.fn((cmd: string, args: string[]) => {
   const commandName = args[0];
-  if (cmd === 'which' && commandName === 'hermes') return '/usr/local/bin/hermes\n';
-  if (cmd === 'which' && commandName === 'gitnexus') return '/usr/local/bin/gitnexus\n';
+  const lookupCommand = process.platform === 'win32' ? 'where' : 'which';
+  if (cmd === lookupCommand && commandName === 'hermes') return '/usr/local/bin/hermes\n';
+  if (cmd === lookupCommand && commandName === 'gitnexus') return '/usr/local/bin/gitnexus\n';
   throw new Error('not found');
 });
 
@@ -37,14 +42,7 @@ describe('setupCommand Hermes support', () => {
   let tempHome: string;
   let originalHome: string | undefined;
   let originalUserProfile: string | undefined;
-  let platformDescriptor: PropertyDescriptor | undefined;
-
-  const setPlatform = (value: NodeJS.Platform) => {
-    Object.defineProperty(process, 'platform', {
-      value,
-      configurable: true,
-    });
-  };
+  let originalCodexHome: string | undefined;
 
   beforeEach(async () => {
     vi.resetModules();
@@ -52,24 +50,22 @@ describe('setupCommand Hermes support', () => {
 
     originalHome = process.env.HOME;
     originalUserProfile = process.env.USERPROFILE;
+    originalCodexHome = process.env.CODEX_HOME;
     tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-hermes-setup-'));
     process.env.HOME = tempHome;
     process.env.USERPROFILE = tempHome;
+    delete process.env.CODEX_HOME;
 
-    platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
-    setPlatform('darwin');
     vi.spyOn(console, 'log').mockImplementation(() => {});
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
 
-    if (platformDescriptor) {
-      Object.defineProperty(process, 'platform', platformDescriptor);
-    }
-
     process.env.HOME = originalHome;
     process.env.USERPROFILE = originalUserProfile;
+    if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = originalCodexHome;
     await fs.rm(tempHome, { recursive: true, force: true });
   });
 
@@ -82,7 +78,7 @@ describe('setupCommand Hermes support', () => {
     expect(spawnMock).toHaveBeenCalledWith(
       '/usr/local/bin/hermes',
       ['mcp', 'add', 'gitnexus', '--command', '/usr/local/bin/gitnexus', '--args', 'mcp'],
-      { shell: false, stdio: ['pipe', 'pipe', 'pipe'] },
+      { shell: process.platform === 'win32', stdio: ['pipe', 'pipe', 'pipe'] },
     );
     expect(spawnMock.mock.results[0].value.stdin.end).toHaveBeenCalledWith('Y\n');
   });
@@ -91,18 +87,33 @@ describe('setupCommand Hermes support', () => {
     await fs.mkdir(path.join(tempHome, '.hermes'), { recursive: true });
     execFileSyncMock.mockImplementation((cmd: string, args: string[]) => {
       const commandName = args[0];
-      if (cmd === 'which' && commandName === 'hermes') return '/usr/local/bin/hermes\n';
-      if (cmd === 'which' && commandName === 'gitnexus') throw new Error('not found');
+      const lookupCommand = process.platform === 'win32' ? 'where' : 'which';
+      if (cmd === lookupCommand && commandName === 'hermes') {
+        return '/usr/local/bin/hermes\n';
+      }
+      if (cmd === lookupCommand && commandName === 'gitnexus') throw new Error('not found');
       throw new Error('not found');
     });
 
     const { setupCommand } = await import('../../src/cli/setup.js');
     await setupCommand();
 
+    const fallbackEntry =
+      process.platform === 'win32'
+        ? { command: 'cmd', args: ['/c', 'npx', '-y', packageSpecifier, 'mcp'] }
+        : { command: 'npx', args: ['-y', packageSpecifier, 'mcp'] };
     expect(spawnMock).toHaveBeenCalledWith(
       '/usr/local/bin/hermes',
-      ['mcp', 'add', 'gitnexus', '--command', 'npx', '--args', '-y', 'gitnexus@latest', 'mcp'],
-      { shell: false, stdio: ['pipe', 'pipe', 'pipe'] },
+      [
+        'mcp',
+        'add',
+        'gitnexus',
+        '--command',
+        fallbackEntry.command,
+        '--args',
+        ...fallbackEntry.args,
+      ],
+      { shell: process.platform === 'win32', stdio: ['pipe', 'pipe', 'pipe'] },
     );
     expect(spawnMock.mock.results[0].value.stdin.end).toHaveBeenCalledWith('Y\n');
   });
@@ -153,7 +164,7 @@ describe('setupCommand Hermes support', () => {
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('preserved existing'));
   });
 
-  it('does not create other editor config files during Hermes-only setup', async () => {
+  it('does not create configs for undetected editors while still configuring Codex', async () => {
     await fs.mkdir(path.join(tempHome, '.hermes'), { recursive: true });
 
     const { setupCommand } = await import('../../src/cli/setup.js');
@@ -161,7 +172,7 @@ describe('setupCommand Hermes support', () => {
 
     await expect(fs.access(path.join(tempHome, '.claude.json'))).rejects.toThrow();
     await expect(fs.access(path.join(tempHome, '.cursor'))).rejects.toThrow();
-    await expect(fs.access(path.join(tempHome, '.codex'))).rejects.toThrow();
+    await expect(fs.access(path.join(tempHome, '.codex', 'config.toml'))).resolves.toBeUndefined();
     await expect(fs.access(path.join(tempHome, '.config', 'opencode'))).rejects.toThrow();
   });
 });

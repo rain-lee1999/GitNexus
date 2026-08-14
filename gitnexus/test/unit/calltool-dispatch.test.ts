@@ -7,7 +7,11 @@
  * These are pure unit tests that mock the LadybugDB layer to test
  * the dispatch and error handling logic in isolation.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 // We need to mock the LadybugDB adapter and repo-manager BEFORE importing LocalBackend.
 // local-backend.ts imports from core/lbug/pool-adapter.js; the mcp/core/lbug-adapter.js
@@ -89,6 +93,30 @@ const MOCK_REPO_ENTRY = {
   lastCommit: 'abc1234567890',
   stats: { files: 10, nodes: 50, edges: 100, communities: 3, processes: 5 },
 };
+
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
+  );
+});
+
+async function createGitRepo(): Promise<string> {
+  const directory = await mkdtemp(path.join(tmpdir(), 'gitnexus-detect-changes-'));
+  temporaryDirectories.push(directory);
+  execFileSync('git', ['init', '-q'], { cwd: directory });
+  execFileSync('git', ['config', 'user.email', 'detect-changes-test@example.invalid'], {
+    cwd: directory,
+  });
+  execFileSync('git', ['config', 'user.name', 'Detect Changes Test'], { cwd: directory });
+  await writeFile(path.join(directory, 'tracked.ts'), 'export const value = 1;\n');
+  execFileSync('git', ['add', 'tracked.ts'], { cwd: directory });
+  execFileSync('git', ['commit', '-qm', 'initial'], { cwd: directory });
+  return directory;
+}
 
 function setupSingleRepo() {
   (listRegisteredRepos as any).mockResolvedValue([MOCK_REPO_ENTRY]);
@@ -547,6 +575,40 @@ describe('LocalBackend.callTool', () => {
     // Should either return changes or a git error
     expect(result).toBeDefined();
     expect(result.error || result.summary).toBeDefined();
+  });
+
+  it('resolves a valid compare ref to a commit before diffing', async () => {
+    const repoPath = await createGitRepo();
+    await writeFile(path.join(repoPath, 'tracked.ts'), 'export const value = 2;\n');
+    (listRegisteredRepos as any).mockResolvedValue([
+      { ...MOCK_REPO_ENTRY, path: repoPath, storagePath: path.join(repoPath, '.gitnexus') },
+    ]);
+    backend = new LocalBackend();
+    await backend.init();
+
+    const result = await backend.callTool('detect_changes', {
+      scope: 'compare',
+      base_ref: 'HEAD',
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.summary.changed_files).toBe(1);
+  });
+
+  it('rejects option-like compare refs without creating git output files', async () => {
+    const repoPath = await createGitRepo();
+    const outputPath = path.join(repoPath, 'injected.diff');
+    (listRegisteredRepos as any).mockResolvedValue([
+      { ...MOCK_REPO_ENTRY, path: repoPath, storagePath: path.join(repoPath, '.gitnexus') },
+    ]);
+    backend = new LocalBackend();
+    await backend.init();
+
+    for (const base_ref of [`--output=${outputPath}`, '--no-index']) {
+      const result = await backend.callTool('detect_changes', { scope: 'compare', base_ref });
+      expect(result).toEqual({ error: 'Invalid base_ref: expected an existing commit-ish.' });
+    }
+    await expect(access(outputPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('dispatches rename tool', async () => {
