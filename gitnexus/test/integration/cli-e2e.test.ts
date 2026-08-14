@@ -23,12 +23,9 @@ const cliEntry = path.join(repoRoot, 'src/cli/index.ts');
 const FIXTURE_SRC = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
 
 // `MINI_REPO` is a *per-run temp copy* of the fixture, not the shared
-// source. Writing into the shared source races with other suites that
-// ingest it read-only (pipeline-graph-golden, pipeline.test) — those
-// suites copy the source to their own tmp dir but the copy happens at
-// `beforeAll`, so if this suite's analyze has already created AGENTS.md
-// / CLAUDE.md / .claude/ in the source when the other suite's cpSync
-// runs, the pollution is captured before the isolation kicks in.
+// source. This suite intentionally writes index state and exercises explicit
+// context paths; a shared fixture would race suites that ingest it read-only.
+// The deterministic fix is to isolate every run before any CLI mutation.
 //
 // The deterministic fix: this suite never touches the shared source.
 // `beforeAll` copies the fixture to a fresh mkdtemp'd directory whose
@@ -159,6 +156,47 @@ function makeMiniRepoCopy(basename: string, prefix: string): string {
   return repo;
 }
 
+function snapshotDirectory(root: string): Record<string, string> {
+  const snapshot: Record<string, string> = {};
+  if (!fs.existsSync(root)) return snapshot;
+  const visit = (directory: string) => {
+    const entries = fs.readdirSync(directory, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const absolute = path.join(directory, entry.name);
+      const relative = path.relative(root, absolute);
+      if (entry.isDirectory()) visit(absolute);
+      else if (entry.isSymbolicLink()) snapshot[relative] = `symlink:${fs.readlinkSync(absolute)}`;
+      else snapshot[relative] = `file:${fs.readFileSync(absolute).toString('base64')}`;
+    }
+  };
+  visit(root);
+  return snapshot;
+}
+
+function snapshotAgentAssets(repo: string) {
+  const agentsPath = path.join(repo, 'AGENTS.md');
+  return {
+    agents: fs.existsSync(agentsPath) ? fs.readFileSync(agentsPath).toString('base64') : null,
+    skills: snapshotDirectory(path.join(repo, '.agents')),
+  };
+}
+
+function changedAgentAssetPaths(
+  before: ReturnType<typeof snapshotAgentAssets>,
+  after: ReturnType<typeof snapshotAgentAssets>,
+): string[] {
+  const changed: string[] = [];
+  if (before.agents !== after.agents) changed.push('AGENTS.md');
+  const skillPaths = new Set([...Object.keys(before.skills), ...Object.keys(after.skills)]);
+  for (const relativePath of skillPaths) {
+    if (before.skills[relativePath] !== after.skills[relativePath]) {
+      changed.push(`.agents/${relativePath}`);
+    }
+  }
+  return changed.sort();
+}
+
 describe('CLI end-to-end', () => {
   it('status command exits cleanly', () => {
     const result = runCli('status', MINI_REPO);
@@ -201,6 +239,103 @@ describe('CLI end-to-end', () => {
     expect(fs.existsSync(path.join(MINI_REPO, '.gitignore'))).toBe(false);
     expect(fs.readFileSync(path.join(gitnexusDir, '.gitignore'), 'utf-8')).toBe('*\n');
   }, 60_000);
+
+  it('plain analyze leaves the complete repository agent-asset tree byte-identical', () => {
+    const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-safe-analyze-home-'));
+    const repo = makeMiniRepoCopy('mini-repo', 'gn-safe-analyze-repo-');
+    const agentsPath = path.join(repo, 'AGENTS.md');
+    const sentinels: Record<string, string> = {
+      '.agents/skills/custom/SKILL.md': '# User-owned skill\n',
+      '.agents/skills/gitnexus-cli/SKILL.md': '# Existing fixed skill\n',
+      '.agents/skills/gitnexus-guide/SKILL.md': '# Existing guide skill\n',
+      '.agents/skills/gitnexus-generated-existing/SKILL.md': '# Existing generated skill\n',
+      '.agents/skills/.gitnexus-managed-commit': 'legacy-managed-marker\n',
+      '.agents/skills/.gitnexus-generated-commit': 'legacy-generated-marker\n',
+    };
+    try {
+      fs.writeFileSync(agentsPath, '# User-owned rules\n');
+      for (const [relativePath, content] of Object.entries(sentinels)) {
+        const absolutePath = path.join(repo, relativePath);
+        fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+        fs.writeFileSync(absolutePath, content);
+      }
+      const before = snapshotAgentAssets(repo);
+      const result = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 60_000);
+      expect(result.status).toBe(0);
+      expect(snapshotAgentAssets(repo)).toEqual(before);
+    } finally {
+      fs.rmSync(gnHome, { recursive: true, force: true });
+      fs.rmSync(path.dirname(repo), { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it('agent-context CLI enforces reviewed plans and writes only declared targets', () => {
+    const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-context-cli-home-'));
+    const repo = makeMiniRepoCopy('mini-repo', 'gn-context-cli-repo-');
+    const cwd = path.dirname(repo);
+    const env = { GITNEXUS_HOME: gnHome };
+    try {
+      const analyze = runCliWithEnv(['analyze', repo], cwd, env, 60_000);
+      expect(analyze.status).toBe(0);
+      const before = snapshotAgentAssets(repo);
+      const planned = runCliWithEnv(
+        ['agent-context', 'plan', '--path', repo, '--json'],
+        cwd,
+        env,
+        60_000,
+      );
+      expect(planned.status, planned.stderr).toBe(0);
+      const plan = JSON.parse(planned.stdout) as {
+        planId: string;
+        changes: Array<{ relativePath: string; action: string }>;
+      };
+      expect(plan.planId).toMatch(/^sha256:[a-f0-9]{64}$/);
+      expect(snapshotAgentAssets(repo)).toEqual(before);
+      const rejected = runCliWithEnv(
+        ['agent-context', 'apply', '--path', repo, '--expect', `sha256:${'0'.repeat(64)}`],
+        cwd,
+        env,
+        60_000,
+      );
+      expect(rejected.status).not.toBe(0);
+      expect(snapshotAgentAssets(repo)).toEqual(before);
+      const applied = runCliWithEnv(
+        ['agent-context', 'apply', '--path', repo, '--expect', plan.planId],
+        cwd,
+        env,
+        60_000,
+      );
+      expect(applied.status, applied.stderr).toBe(0);
+      const actualPaths = changedAgentAssetPaths(before, snapshotAgentAssets(repo));
+      const declaredPaths = plan.changes
+        .filter(({ action }) => action !== 'unchanged')
+        .map(({ relativePath }) => relativePath)
+        .sort();
+      expect(actualPaths).toEqual(declaredPaths);
+      const second = runCliWithEnv(
+        ['agent-context', 'plan', '--path', repo, '--json'],
+        cwd,
+        env,
+        60_000,
+      );
+      expect(second.status, second.stderr).toBe(0);
+      const secondPlan = JSON.parse(second.stdout) as {
+        changes: Array<{ action: string }>;
+      };
+      expect(secondPlan.changes.every(({ action }) => action === 'unchanged')).toBe(true);
+      const noChangeText = runCliWithEnv(
+        ['agent-context', 'plan', '--path', repo],
+        cwd,
+        env,
+        60_000,
+      );
+      expect(noChangeText.status, noChangeText.stderr).toBe(0);
+      expect(noChangeText.stdout).toContain('No repository files were written.');
+    } finally {
+      fs.rmSync(gnHome, { recursive: true, force: true });
+      fs.rmSync(path.dirname(repo), { recursive: true, force: true });
+    }
+  }, 120_000);
 
   // Regression guard for issue #1169 — analyze must produce BOTH a
   // meta.json AND a global-registry entry on success. The previous

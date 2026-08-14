@@ -32,7 +32,7 @@ program
 
 program
   .command('analyze [path]')
-  .description('Index a repository (full analysis)')
+  .description('Index a repository without writing AGENTS.md or .agents/skills')
   .option('-f, --force', 'Force full re-index even if up to date')
   .option('--embeddings', 'Enable embedding generation for semantic search (off by default)')
   .option(
@@ -40,13 +40,16 @@ program
     'Drop existing embeddings on rebuild. By default, an `analyze` without `--embeddings` ' +
       'preserves any embeddings already present in the index.',
   )
-  .option('--skills', 'Generate repo-specific skill files from detected communities')
+  .option(
+    '--skills',
+    'Legacy explicit write path: generate repo skills and refresh AGENTS.md/.agents/skills',
+  )
   .option(
     '--index-only',
-    'Refresh only the graph index, metadata, and registry; never write AGENTS.md or .agents/skills',
+    'Deprecated compatibility alias; default analyze already leaves agent assets unchanged',
   )
-  .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md')
-  .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md')
+  .option('--skip-agents-md', 'Legacy --skills only: leave AGENTS.md unchanged')
+  .option('--no-stats', 'Deprecated compatibility option; tracked context always omits stats')
   .option(
     '--skip-git',
     'Treat the provided path/cwd as the index root and skip parent git-root discovery',
@@ -87,6 +90,22 @@ program
       '     `!__tests__/` to index a directory that is auto-filtered by default (#771).',
   )
   .action(createLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
+
+program
+  .command('agent-context <action>')
+  .description('Plan or explicitly apply repo-local AGENTS.md and managed skill changes')
+  .requiredOption(
+    '--path <absolute-worktree>',
+    'Absolute Git worktree root (never inferred from cwd)',
+  )
+  .option('--name <display-name>', 'Display name used in generated repository context')
+  .option('--expect <plan-id>', 'Required for apply; refuse if the reviewed plan has changed')
+  .option('--json', 'Emit the plan or apply result as JSON')
+  .addHelpText(
+    'after',
+    '\nActions:\n  plan   Read-only diff; writes no repository files\n  apply  Explicitly write the current reviewed assets\n',
+  )
+  .action(createLazyAction(() => import('./agent-context.js'), 'agentContextCommand'));
 
 program
   .command('refresh <action>')

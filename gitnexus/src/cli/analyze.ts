@@ -19,6 +19,7 @@ import {
   RegistryNameCollisionError,
   AnalysisNotFinalizedError,
   assertAnalysisFinalized,
+  withAnalysisLock,
 } from '../storage/repo-manager.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
@@ -352,8 +353,6 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         embeddings: options?.embeddings,
         dropEmbeddings: options?.dropEmbeddings,
         skipGit: options?.skipGit,
-        skipAgentsMd: options?.skipAgentsMd,
-        noStats: options?.noStats,
         indexOnly: options?.indexOnly,
         registryName: options?.name,
         // Registry-collision bypass — its own CLI flag, intentionally NOT
@@ -407,10 +406,17 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
         // coordinator alias. Generated skills are user-visible tracked
         // context, so use the display name carried by the orchestrator.
         const contextName = result.contextName ?? result.repoName;
-        const skillResult = await generateSkillFiles(repoPath, contextName, result.pipelineResult);
-        if (skillResult.skills.length > 0) {
-          barLog(`  Generated ${skillResult.skills.length} skill files`);
-          // Re-generate AI context files now that we have skill info
+        await withAnalysisLock(repoPath, async () => {
+          const skillResult = await generateSkillFiles(
+            repoPath,
+            contextName,
+            result.pipelineResult,
+          );
+          if (skillResult.skills.length > 0) {
+            barLog(`  Generated ${skillResult.skills.length} skill files`);
+          }
+          // Re-generate AI context files even when there are no repo-specific
+          // communities; `--skills` is the explicit legacy managed-context path.
           const s = result.stats;
           const communityResult = result.pipelineResult?.communityResult;
           let aggregatedClusterCount = 0;
@@ -440,9 +446,10 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
             skillResult.skills,
             { skipAgentsMd: options?.skipAgentsMd, noStats: options?.noStats },
           );
-        }
-      } catch {
-        /* best-effort */
+        });
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Skill/context generation failed: ${message}`);
       }
     }
 

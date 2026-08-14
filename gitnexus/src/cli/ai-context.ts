@@ -7,14 +7,16 @@
 
 import fs from 'fs/promises';
 import path from 'path';
+import { createHash } from 'crypto';
 import { fileURLToPath } from 'url';
 import { type GeneratedSkillInfo } from './skill-gen.js';
+import { assertSafeRepoRelativePath, canonicalizeRepoRoot } from './repo-write-safety.js';
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-interface RepoStats {
+export interface RepoStats {
   files?: number;
   nodes?: number;
   edges?: number;
@@ -30,8 +32,22 @@ export interface AIContextOptions {
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
 const GITNEXUS_END_MARKER = '<!-- gitnexus:end -->';
-const GITNEXUS_CONTEXT_VERSION_MARKER = '<!-- gitnexus:context-version:1 -->';
-const MANAGED_SKILLS_COMMIT_FILE = '.gitnexus-managed-commit';
+export const GITNEXUS_CONTEXT_VERSION_MARKER = '<!-- gitnexus:context-version:2 -->';
+export const MANAGED_SKILLS_MARKER_FILE = '.gitnexus-managed-commit';
+const MANAGED_SKILLS_FINGERPRINT_SCHEMA = 'gitnexus-managed-skills:1';
+
+export const assertSafeContextProjectName = (projectName: string): void => {
+  if (
+    projectName.length === 0 ||
+    projectName.length > 200 ||
+    projectName.trim() !== projectName ||
+    /[\u0000-\u001f\u007f]/.test(projectName) ||
+    projectName.includes('<!--') ||
+    projectName.includes('-->')
+  ) {
+    throw new Error('Agent-context project name contains unsafe control or marker characters.');
+  }
+};
 
 export const GITNEXUS_REPO_SKILLS = [
   {
@@ -71,17 +87,53 @@ export const GITNEXUS_REPO_SKILLS = [
   },
 ] as const;
 
-async function readIndexedCommit(storagePath: string): Promise<string | undefined> {
+type ManagedSkillAsset = { name: string; content: string };
+
+const fingerprintManagedSkillAssets = (assets: ManagedSkillAsset[]): string => {
+  const hash = createHash('sha256');
+  hash.update(`${MANAGED_SKILLS_FINGERPRINT_SCHEMA}\0`);
+  for (const asset of [...assets].sort((a, b) => a.name.localeCompare(b.name))) {
+    hash.update(`${asset.name}\0${asset.content}\0`);
+  }
+  return `sha256:${hash.digest('hex')}`;
+};
+
+const packageSkillPath = (skillName: string): string =>
+  path.join(__dirname, '..', '..', 'skills', `${skillName}.md`);
+
+const readPackagedManagedSkills = async (): Promise<ManagedSkillAsset[]> =>
+  Promise.all(
+    GITNEXUS_REPO_SKILLS.map(async ({ name }) => ({
+      name,
+      content: await fs.readFile(packageSkillPath(name), 'utf-8'),
+    })),
+  );
+
+/** Fingerprint of the packaged fixed-skill bundle, independent of the indexed repository commit. */
+export const getManagedSkillsFingerprint = async (): Promise<string> =>
+  fingerprintManagedSkillAssets(await readPackagedManagedSkills());
+
+/** Fingerprint the materialized fixed skills, or return undefined when any declared file is absent. */
+export const getInstalledManagedSkillsFingerprint = async (
+  repoPath: string,
+): Promise<string | undefined> => {
   try {
-    const raw = await fs.readFile(path.join(storagePath, 'meta.json'), 'utf-8');
-    const meta = JSON.parse(raw) as { lastCommit?: unknown };
-    return typeof meta.lastCommit === 'string' && meta.lastCommit.length > 0
-      ? meta.lastCommit
-      : undefined;
+    const canonicalRoot = await canonicalizeRepoRoot(repoPath);
+    const assets = await Promise.all(
+      GITNEXUS_REPO_SKILLS.map(async ({ name }) => {
+        const relativePath = `.agents/skills/${name}/SKILL.md`;
+        await assertSafeRepoRelativePath(canonicalRoot, relativePath);
+        return {
+          name,
+          content: await fs.readFile(path.join(canonicalRoot, relativePath), 'utf-8'),
+        };
+      }),
+    );
+    return fingerprintManagedSkillAssets(assets);
   } catch {
     return undefined;
   }
-}
+};
 
 /**
  * Find the index of a section marker that occupies its own line.
@@ -109,6 +161,18 @@ function findSectionMarkerIndex(content: string, marker: string, startFrom = 0):
   }
   return -1;
 }
+
+const findSectionMarkerIndices = (content: string, marker: string): number[] => {
+  const indices: number[] = [];
+  let cursor = 0;
+  while (cursor <= content.length) {
+    const index = findSectionMarkerIndex(content, marker, cursor);
+    if (index === -1) break;
+    indices.push(index);
+    cursor = index + marker.length;
+  }
+  return indices;
+};
 
 /**
  * Generate the full GitNexus context content.
@@ -148,10 +212,7 @@ function generateGitNexusContent(
   const generatedRows =
     generatedSkills && generatedSkills.length > 0
       ? generatedSkills
-          .map(
-            (s) =>
-              `| Work in the ${s.label} area (${s.symbolCount} symbols) | \`.agents/skills/${s.name}/SKILL.md\` |`,
-          )
+          .map((s) => `| Work in the ${s.label} area | \`.agents/skills/${s.name}/SKILL.md\` |`)
           .join('\n')
       : '';
 
@@ -237,101 +298,67 @@ async function upsertGitNexusSection(
   const exists = await fileExists(filePath);
 
   if (!exists) {
-    await fs.writeFile(filePath, content.trim() + '\n', 'utf-8');
+    await fs.writeFile(filePath, content.trimEnd() + '\n', 'utf-8');
     return 'created';
   }
 
   const existingContent = await fs.readFile(filePath, 'utf-8');
+  const starts = findSectionMarkerIndices(existingContent, GITNEXUS_START_MARKER);
+  const ends = findSectionMarkerIndices(existingContent, GITNEXUS_END_MARKER);
 
-  // Check if GitNexus section already exists. Matching is restricted
-  // to markers that occupy their own line so that inline prose
-  // references (e.g. `` See the `<!-- gitnexus:start -->` block ``) are
-  // NOT treated as section delimiters (#1041). The end-marker scan starts
-  // after the start-marker so it can never pick up an earlier end.
-  const startIdx = findSectionMarkerIndex(existingContent, GITNEXUS_START_MARKER);
-  const endIdx = findSectionMarkerIndex(
-    existingContent,
-    GITNEXUS_END_MARKER,
-    startIdx === -1 ? 0 : startIdx,
-  );
-
-  if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-    // Replace existing section
-    const before = existingContent.substring(0, startIdx);
-    const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
-    const newContent = before + content + after;
-    await fs.writeFile(filePath, newContent.trim() + '\n', 'utf-8');
-    return 'updated';
+  if (starts.length === 0 && ends.length === 0) {
+    const separator = existingContent.endsWith('\n\n')
+      ? ''
+      : existingContent.endsWith('\n')
+        ? '\n'
+        : '\n\n';
+    await fs.writeFile(filePath, existingContent + separator + content.trimEnd() + '\n', 'utf-8');
+    return 'appended';
   }
 
-  // Append new section
-  const newContent = existingContent.trim() + '\n\n' + content + '\n';
-  await fs.writeFile(filePath, newContent, 'utf-8');
-  return 'appended';
+  if (starts.length !== 1 || ends.length !== 1 || ends[0] <= starts[0]) {
+    throw new Error(
+      `Malformed GitNexus section in ${filePath}; expected exactly one ordered marker pair`,
+    );
+  }
+
+  const before = existingContent.substring(0, starts[0]);
+  const after = existingContent.substring(ends[0] + GITNEXUS_END_MARKER.length);
+  await fs.writeFile(filePath, before + content.trimEnd() + after, 'utf-8');
+  return 'updated';
 }
 
 /**
  * Install GitNexus skills as direct children of .agents/skills/ so Codex can
  * discover each SKILL.md natively. Only GitNexus-owned directories are touched.
  */
-async function installSkills(repoPath: string, indexedCommit?: string): Promise<string[]> {
+async function installSkills(repoPath: string): Promise<string[]> {
   const skillsDir = path.join(repoPath, '.agents', 'skills');
   const installedSkills: string[] = [];
+  const assets = await readPackagedManagedSkills();
 
   await fs.mkdir(skillsDir, { recursive: true });
-  await fs.rm(path.join(skillsDir, MANAGED_SKILLS_COMMIT_FILE), { force: true });
+  await fs.rm(path.join(skillsDir, MANAGED_SKILLS_MARKER_FILE), { force: true });
 
-  for (const skill of GITNEXUS_REPO_SKILLS) {
-    const skillName = skill.name;
-    const skillDir = path.join(skillsDir, skillName);
-    const skillPath = path.join(skillDir, 'SKILL.md');
-
-    try {
-      // Create skill directory
-      await fs.mkdir(skillDir, { recursive: true });
-
-      // Try to read from package skills directory
-      const packageSkillPath = path.join(__dirname, '..', '..', 'skills', `${skillName}.md`);
-      let skillContent: string;
-
-      try {
-        skillContent = await fs.readFile(packageSkillPath, 'utf-8');
-      } catch {
-        // Fallback: generate minimal skill content
-        skillContent = `---
-name: ${skillName}
-description: ${skill.description}
----
-
-# ${skillName.charAt(0).toUpperCase() + skillName.slice(1)}
-
-${skill.description}
-
-Use GitNexus tools to accomplish this task.
-`;
-      }
-
-      await fs.writeFile(skillPath, skillContent, 'utf-8');
-      installedSkills.push(skillName);
-    } catch (err) {
-      // Skip on error, don't fail the whole process
-      console.warn(`Warning: Could not install skill ${skillName}:`, err);
-    }
+  for (const asset of assets) {
+    const skillDir = path.join(skillsDir, asset.name);
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), asset.content, 'utf-8');
+    installedSkills.push(asset.name);
   }
 
-  if (installedSkills.length === GITNEXUS_REPO_SKILLS.length) {
-    await fs.writeFile(
-      path.join(skillsDir, MANAGED_SKILLS_COMMIT_FILE),
-      `${indexedCommit ?? 'unknown'}\n`,
-      'utf-8',
-    );
-  }
+  await fs.writeFile(
+    path.join(skillsDir, MANAGED_SKILLS_MARKER_FILE),
+    `${fingerprintManagedSkillAssets(assets)}\n`,
+    'utf-8',
+  );
 
   return installedSkills;
 }
 
 /**
- * Generate AI context files after indexing
+ * Materialize the explicit repo-local agent context. Plain `analyze` does not
+ * call this; it is used by `agent-context` planning and legacy `analyze --skills`.
  */
 export async function generateAIContextFiles(
   repoPath: string,
@@ -341,20 +368,26 @@ export async function generateAIContextFiles(
   generatedSkills?: GeneratedSkillInfo[],
   options?: AIContextOptions,
 ): Promise<{ files: string[] }> {
-  const indexedCommit = await readIndexedCommit(storagePath);
-  const groupNames = await findGroupsContainingRegistryName(projectName);
-  const content = generateGitNexusContent(
-    projectName,
-    stats,
-    generatedSkills,
-    groupNames,
-    options?.noStats,
+  assertSafeContextProjectName(projectName);
+  const canonicalRepoPath = await canonicalizeRepoRoot(repoPath);
+  if (!options?.skipAgentsMd) {
+    await assertSafeRepoRelativePath(canonicalRepoPath, 'AGENTS.md');
+  }
+  for (const { name } of GITNEXUS_REPO_SKILLS) {
+    await assertSafeRepoRelativePath(canonicalRepoPath, `.agents/skills/${name}/SKILL.md`);
+  }
+  await assertSafeRepoRelativePath(
+    canonicalRepoPath,
+    `.agents/skills/${MANAGED_SKILLS_MARKER_FILE}`,
   );
+
+  const groupNames = await findGroupsContainingRegistryName(projectName);
+  const content = generateGitNexusContent(projectName, stats, generatedSkills, groupNames, true);
   const createdFiles: string[] = [];
 
   if (!options?.skipAgentsMd) {
     // Create AGENTS.md (Codex's repository instruction file).
-    const agentsPath = path.join(repoPath, 'AGENTS.md');
+    const agentsPath = path.join(canonicalRepoPath, 'AGENTS.md');
     const agentsResult = await upsertGitNexusSection(agentsPath, content);
     createdFiles.push(`AGENTS.md (${agentsResult})`);
   } else {
@@ -362,7 +395,7 @@ export async function generateAIContextFiles(
   }
 
   // Install repo-scoped skills to .agents/skills/.
-  const installedSkills = await installSkills(repoPath, indexedCommit);
+  const installedSkills = await installSkills(canonicalRepoPath);
   if (installedSkills.length > 0) {
     createdFiles.push(`.agents/skills/ (${installedSkills.length} GitNexus skills)`);
   }

@@ -15,15 +15,26 @@ All commands work via `npx` — no global install required.
 npx gitnexus analyze
 ```
 
-Run from the project root. This parses all source files, builds the knowledge graph, writes it to `.gitnexus/`, and generates CLAUDE.md / AGENTS.md context files.
+Run from the project root. This parses source files, builds the graph under `.gitnexus/`, and updates registry state. Plain `analyze` leaves `AGENTS.md`, `CLAUDE.md`, and `.agents/skills/` unchanged.
 
 | Flag | Effect |
 |------|--------|
 | `--force` | Force full re-index even if up to date |
 | `--embeddings` | Enable embedding generation for semantic search (off by default) |
 | `--drop-embeddings` | Drop existing embeddings on rebuild. By default, an `analyze` without `--embeddings` preserves them. |
+| `--skills` | Legacy explicit write path for repo-specific generated skills and managed context |
+| `--index-only` | Deprecated compatibility alias; plain `analyze` is already agent-context safe |
 
 **When to run:** First time in a project, after major code changes, or when `gitnexus://repo/{name}/context` reports the index is stale.
+
+### agent-context — Review and apply repo-local context
+
+```bash
+gitnexus agent-context plan --path /absolute/path/to/worktree
+gitnexus agent-context apply --path /absolute/path/to/worktree --expect <plan-id>
+```
+
+`plan` is read-only. `apply` explicitly updates the managed `AGENTS.md` block and seven fixed repo skills; `--expect` prevents applying a plan that changed after review. Fixed skill freshness follows bundled-content fingerprints, not source commits.
 
 ### status — Check index freshness
 

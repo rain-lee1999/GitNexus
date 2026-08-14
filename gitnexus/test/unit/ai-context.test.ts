@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { generateAIContextFiles } from '../../src/cli/ai-context.js';
+import { generateAIContextFiles, getManagedSkillsFingerprint } from '../../src/cli/ai-context.js';
 
 describe('generateAIContextFiles', () => {
   let tmpDir: string;
@@ -48,7 +48,7 @@ describe('generateAIContextFiles', () => {
     const content = await fs.readFile(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
     expect(content).toContain('gitnexus:start');
     expect(content).toContain('gitnexus:end');
-    expect(content).toContain('<!-- gitnexus:context-version:1 -->');
+    expect(content).toContain('<!-- gitnexus:context-version:2 -->');
     expect(content).not.toContain('gitnexus:index-commit:');
     expect(content).toContain('TestProject');
     await expect(fs.access(path.join(tmpDir, 'CLAUDE.md'))).rejects.toThrow();
@@ -240,7 +240,7 @@ describe('generateAIContextFiles', () => {
       ]),
     );
     expect(await fs.readFile(path.join(skillsDir, '.gitnexus-managed-commit'), 'utf-8')).toBe(
-      `${indexedCommit}\n`,
+      `${await getManagedSkillsFingerprint()}\n`,
     );
     await expect(fs.access(path.join(skillsDir, '.gitnexus-generated-commit'))).rejects.toThrow();
     expect(result.files).toContain('.agents/skills/ (7 GitNexus skills)');
@@ -262,7 +262,7 @@ describe('generateAIContextFiles', () => {
         path.join(tmpDir, '.agents', 'skills', '.gitnexus-managed-commit'),
         'utf-8',
       ),
-    ).toBe(`${indexedCommit}\n`);
+    ).toBe(`${await getManagedSkillsFingerprint()}\n`);
   });
 
   it('preserves manual AGENTS.md and never touches CLAUDE.md when skipAgentsMd is enabled', async () => {
@@ -291,6 +291,22 @@ describe('generateAIContextFiles', () => {
     const claudeAfter = await fs.readFile(claudePath, 'utf-8');
     expect(agentsAfter).toBe(agentsContent);
     expect(claudeAfter).toBe(claudeContent);
+  });
+
+  it('rejects symlinked legacy context targets instead of writing outside the repo', async () => {
+    const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ai-ctx-symlink-'));
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ai-ctx-outside-'));
+    try {
+      await fs.mkdir(path.join(repo, '.gitnexus'));
+      await fs.symlink(outside, path.join(repo, '.agents'));
+      await expect(
+        generateAIContextFiles(repo, path.join(repo, '.gitnexus'), 'TestProject', {}),
+      ).rejects.toThrow(/symbolic link/i);
+      await expect(fs.readdir(outside)).resolves.toEqual([]);
+    } finally {
+      await fs.rm(repo, { recursive: true, force: true });
+      await fs.rm(outside, { recursive: true, force: true });
+    }
   });
 
   it('preserves inline marker references in prose and does not corrupt markdown (#1041)', async () => {

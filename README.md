@@ -83,6 +83,7 @@ Enterprise includes:
 ## Development
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — packages, index → graph → MCP flow, where to change code
+- [Project memory](docs/project-memory/00-index.md) — durable architecture, protocols, decisions, status, and verification
 - [RUNBOOK.md](RUNBOOK.md) — analyze, embeddings, stale index, MCP recovery, CI snippets
 - [GUARDRAILS.md](GUARDRAILS.md) — safety rules and operational “Signs” for contributors and agents
 - [CONTRIBUTING.md](CONTRIBUTING.md) — license, setup, commits, and pull requests
@@ -99,13 +100,18 @@ The CLI indexes your repository and runs an MCP server that gives AI agents deep
 npx gitnexus analyze
 ```
 
-That's it. This indexes the codebase and creates Codex-native `AGENTS.md` plus repo skills under `.agents/skills/`.
+That's it. This indexes the codebase and leaves tracked agent assets unchanged. To add or refresh repo-local `AGENTS.md` plus the seven managed skills, review the read-only plan and then apply it explicitly:
+
+```bash
+npx gitnexus agent-context plan --path /absolute/path/to/worktree
+npx gitnexus agent-context apply --path /absolute/path/to/worktree --expect <plan-id>
+```
 
 To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
 
 ### Worktree-safe refresh
 
-Use `refresh ensure` for the first graph index and ordinary graph freshness, but only after checking its write plan. Use a full `analyze` only when you want managed `AGENTS.md`/skills, embeddings, or an explicit repair. Initialize every worktree once; only a primary checkout using conventional hooks may install Git-side stale markers:
+Use `refresh ensure` for the first graph index and ordinary graph freshness, but only after checking its write plan. Use `agent-context plan/apply` for managed `AGENTS.md`/skills; use a full `analyze` for embeddings or an explicit repair. Initialize every worktree once; only a primary checkout using conventional hooks may install Git-side stale markers:
 
 ```bash
 # Read-only: inspect freshness and every path a refresh may mutate.
@@ -227,11 +233,13 @@ args = ["-y", "gitnexus@latest", "mcp"]
 
 ```bash
 gitnexus setup                   # Configure MCP for your editors (one-time)
-gitnexus analyze [path]          # Generate managed assets/embeddings or explicitly rebuild
+gitnexus analyze [path]          # Index graph/metadata/registry; never write agent assets
 gitnexus analyze --force         # Force full re-index
-gitnexus analyze --index-only    # Graph/registry only; does not rewrite AGENTS.md or skills
-gitnexus analyze --skills        # Generate repo-specific skill files from detected communities
-gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md GitNexus section edits
+gitnexus agent-context plan --path /abs/worktree  # Read-only tracked-context diff
+gitnexus agent-context apply --path /abs/worktree --expect <plan-id>  # Explicit write
+gitnexus analyze --index-only    # Deprecated alias for the now-safe default
+gitnexus analyze --skills        # Legacy explicit generated-skills + context write path
+gitnexus analyze --skip-agents-md  # Legacy --skills only: preserve AGENTS.md
 gitnexus analyze --skip-git        # Index folders that are not Git repositories
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
@@ -310,7 +318,7 @@ If `analyze` reports a worker parse timeout on a large or unusual repository, it
 | `detect_impact` | Pre-commit change analysis — scope, affected processes, risk level        |
 | `generate_map`  | Architecture documentation from the knowledge graph with mermaid diagrams |
 
-**7 agent skills** installed as direct children of `.agents/skills/` for native Codex discovery:
+**7 agent skills** installed as direct children of `.agents/skills/` for native Codex discovery by explicit `gitnexus agent-context apply --path <absolute-worktree>`:
 
 - **Exploring** — Navigate unfamiliar code using the knowledge graph
 - **Debugging** — Trace bugs through call chains

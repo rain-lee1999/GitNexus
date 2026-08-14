@@ -13,6 +13,7 @@ import { PipelineResult } from '../types/pipeline.js';
 import { CommunityNode, CommunityMembership } from '../core/ingestion/community-processor.js';
 import { ProcessNode } from '../core/ingestion/process-processor.js';
 import { KnowledgeGraph } from '../core/graph/types.js';
+import { assertSafeRepoRelativePath, canonicalizeRepoRoot } from './repo-write-safety.js';
 
 const GENERATED_SKILL_PREFIX = 'gitnexus-generated-';
 const GENERATED_SKILLS_COMMIT_FILE = '.gitnexus-generated-commit';
@@ -60,6 +61,35 @@ export interface GeneratedSkillInfo {
   fileCount: number;
 }
 
+export const discoverGeneratedSkills = async (repoPath: string): Promise<GeneratedSkillInfo[]> => {
+  const canonicalRoot = await canonicalizeRepoRoot(repoPath);
+  const skillsRoot = path.join(canonicalRoot, '.agents', 'skills');
+  try {
+    await assertSafeRepoRelativePath(canonicalRoot, '.agents/skills', 'directory');
+    const entries = await fs.readdir(skillsRoot, { withFileTypes: true });
+    const discovered: GeneratedSkillInfo[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith(GENERATED_SKILL_PREFIX)) continue;
+      const relativePath = `.agents/skills/${entry.name}/SKILL.md`;
+      await assertSafeRepoRelativePath(canonicalRoot, relativePath);
+      const content = await fs.readFile(path.join(canonicalRoot, relativePath), 'utf-8');
+      const label = content.match(/^#\s+(.+)$/m)?.[1]?.trim();
+      if (!label) continue;
+      const counts = content.match(/\*\*(\d+) symbols\*\* across \*\*(\d+) files\*\*/);
+      discovered.push({
+        name: entry.name,
+        label,
+        symbolCount: counts ? Number(counts[1]) : 0,
+        fileCount: counts ? Number(counts[2]) : 0,
+      });
+    }
+    return discovered.sort((a, b) => a.name.localeCompare(b.name));
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+};
+
 interface AggregatedCommunity {
   label: string;
   rawIds: string[];
@@ -103,13 +133,19 @@ export const generateSkillFiles = async (
   pipelineResult: PipelineResult,
 ): Promise<{ skills: GeneratedSkillInfo[]; outputPath: string }> => {
   const { communityResult, processResult, graph } = pipelineResult;
-  const outputDir = path.join(repoPath, '.agents', 'skills');
+  const reportedOutputDir = path.join(repoPath, '.agents', 'skills');
+  const canonicalRepoPath = await canonicalizeRepoRoot(repoPath);
+  await assertSafeRepoRelativePath(
+    canonicalRepoPath,
+    `.agents/skills/${GENERATED_SKILLS_COMMIT_FILE}`,
+  );
+  const outputDir = path.join(canonicalRepoPath, '.agents', 'skills');
   await prepareGeneratedSkillsDir(outputDir);
 
   if (!communityResult || !communityResult.memberships.length) {
     console.log('\n  Skills: no communities detected, skipping skill generation');
-    await writeSkillsIndexCommit(outputDir, repoPath);
-    return { skills: [], outputPath: outputDir };
+    await writeSkillsIndexCommit(outputDir, canonicalRepoPath);
+    return { skills: [], outputPath: reportedOutputDir };
   }
 
   console.log('\n  Generating repo-specific skills...');
@@ -121,7 +157,7 @@ export const generateSkillFiles = async (
   const communities =
     communityResult.communities.length > 0
       ? communityResult.communities
-      : buildCommunitiesFromMemberships(communityResult.memberships, graph, repoPath);
+      : buildCommunitiesFromMemberships(communityResult.memberships, graph);
 
   const aggregated = aggregateCommunities(communities);
 
@@ -134,8 +170,8 @@ export const generateSkillFiles = async (
 
   if (significant.length === 0) {
     console.log('\n  Skills: no significant communities found (all below 3-symbol threshold)');
-    await writeSkillsIndexCommit(outputDir, repoPath);
-    return { skills: [], outputPath: outputDir };
+    await writeSkillsIndexCommit(outputDir, canonicalRepoPath);
+    return { skills: [], outputPath: reportedOutputDir };
   }
 
   // Step 3: Build lookup maps
@@ -155,7 +191,7 @@ export const generateSkillFiles = async (
     if (members.length === 0) continue;
 
     // Gather file info
-    const files = gatherFiles(members, repoPath);
+    const files = gatherFiles(members, canonicalRepoPath);
 
     // Gather entry points
     const entryPoints = gatherEntryPoints(members);
@@ -195,6 +231,7 @@ export const generateSkillFiles = async (
 
     // Write file
     const skillDir = path.join(outputDir, kebabName);
+    await assertSafeRepoRelativePath(canonicalRepoPath, `.agents/skills/${kebabName}/SKILL.md`);
     await fs.mkdir(skillDir, { recursive: true });
     await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf-8');
 
@@ -211,11 +248,11 @@ export const generateSkillFiles = async (
     );
   }
 
-  await writeSkillsIndexCommit(outputDir, repoPath);
+  await writeSkillsIndexCommit(outputDir, canonicalRepoPath);
 
   console.log(`\n  ${skills.length} skills generated \u2192 .agents/skills/`);
 
-  return { skills, outputPath: outputDir };
+  return { skills, outputPath: reportedOutputDir };
 };
 
 // ============================================================================
@@ -227,13 +264,11 @@ export const generateSkillFiles = async (
  *        processor's communities array is empty (all singletons were filtered out)
  * @param {CommunityMembership[]} memberships - All node-to-community assignments
  * @param {KnowledgeGraph} graph - The knowledge graph for resolving node metadata
- * @param {string} repoPath - Repository root for path normalization
  * @returns {CommunityNode[]} Synthetic community nodes built from membership data
  */
 const buildCommunitiesFromMemberships = (
   memberships: CommunityMembership[],
   graph: KnowledgeGraph,
-  repoPath: string,
 ): CommunityNode[] => {
   // Group memberships by communityId
   const groups = new Map<string, string[]>();

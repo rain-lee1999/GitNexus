@@ -161,7 +161,7 @@ describe('--skip-git CLI flag', () => {
       }
     });
 
-    it('only adds intentional Codex assets for --skip-git subdir analyze (#1233)', () => {
+    it('leaves checkout agent assets unchanged for --skip-git subdir analyze (#1233)', () => {
       createTestStructure();
       try {
         fs.writeFileSync(path.join(parentDir, '.gitignore'), '.claude/\n');
@@ -185,9 +185,10 @@ describe('--skip-git CLI flag', () => {
           cwd: parentDir,
           encoding: 'utf8',
         });
-        // Codex-first analysis intentionally installs repo-local skills in the
-        // indexed subdirectory, while leaving the parent and sibling untouched.
-        expect(status).toBe('?? COOLIO/.agents/\n');
+        // Safe-by-default analysis only writes ignored GitNexus index state.
+        expect(status).toBe('');
+        expect(fs.existsSync(path.join(parentDir, 'COOLIO', 'AGENTS.md'))).toBe(false);
+        expect(fs.existsSync(path.join(parentDir, 'COOLIO', '.agents'))).toBe(false);
       } finally {
         cleanup();
       }

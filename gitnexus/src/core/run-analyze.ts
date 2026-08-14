@@ -40,7 +40,6 @@ import {
 } from '../storage/repo-manager.js';
 import { getCurrentCommit, getRemoteUrl, hasGitDir, getInferredRepoName } from '../storage/git.js';
 import type { CachedEmbedding } from './embeddings/types.js';
-import { generateAIContextFiles } from '../cli/ai-context.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
 
@@ -72,16 +71,22 @@ export interface AnalyzeOptions {
    */
   dropEmbeddings?: boolean;
   skipGit?: boolean;
-  /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
-  skipAgentsMd?: boolean;
-  /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
-  noStats?: boolean;
   /**
-   * Build only the graph index, metadata, and global registry entry. This is
-   * intended for automatic refreshers: it must never write repository agent
-   * instruction assets (AGENTS.md or .agents/skills).
+   * Deprecated compatibility signal retained for callers that already pass it.
+   * All analysis now stops at graph/index state and never writes AGENTS.md or
+   * .agents/skills; explicit context writes live under `agent-context apply`.
    */
   indexOnly?: boolean;
+  /**
+   * @deprecated Core analysis no longer writes AGENTS.md. Retained so
+   * programmatic callers compiled against the pre-split API keep type compatibility.
+   */
+  skipAgentsMd?: boolean;
+  /**
+   * @deprecated Core analysis no longer renders tracked context or statistics.
+   * Retained as an ignored compatibility field for programmatic callers.
+   */
+  noStats?: boolean;
   /**
    * Keep a coordinator refresh within its declared local graph/registry
    * write surface. It preserves existing vectors but never invokes an
@@ -128,8 +133,8 @@ export interface AnalyzeResult {
    */
   repoName: string;
   /**
-   * The human-readable name written into generated AGENTS.md and skills.
-   * It intentionally stays independent from a preserved coordinator alias.
+   * Human-readable display name available to explicit downstream context or
+   * legacy skill generation, independent from a preserved coordinator alias.
    */
   contextName: string;
   repoPath: string;
@@ -172,13 +177,12 @@ export const PHASE_LABELS: Record<string, string> = {
 };
 
 /**
- * Choose the name shown in tracked, user-visible generated context.
+ * Choose the human-readable name exposed to explicit downstream context.
  *
  * A refresh coordinator registers every worktree under a collision-resistant
- * alias. That alias is an internal registry key, not a project display name:
- * a later ordinary `gitnexus analyze` must not rewrite AGENTS.md or generated
- * skills with it. An explicit `analyze --name` remains an intentional display
- * override for backwards compatibility.
+ * alias. That alias is an internal registry key, not a project display name,
+ * and must not leak into downstream context. An explicit `analyze --name`
+ * remains a display override for the legacy `--skills` path.
  */
 export const getContextProjectName = (repoPath: string, explicitName?: string): string =>
   explicitName ?? getInferredRepoName(repoPath) ?? path.basename(repoPath);
@@ -217,7 +221,8 @@ const withAnalysisSession = async <T>(operation: () => Promise<T>): Promise<T> =
  *
  * This is the shared core extracted from the CLI `analyze` command. It
  * handles: pipeline execution, LadybugDB loading, FTS indexing, embedding
- * generation, metadata persistence, and AI context file generation.
+ * generation, metadata persistence, and registry finalization. Tracked agent
+ * context is intentionally owned by the explicit CLI context lifecycle.
  *
  * The function communicates progress and log messages exclusively through
  * the {@link AnalyzeCallbacks} interface — it never writes to stdout/stderr
@@ -571,39 +576,6 @@ async function runFullAnalysisUnlocked(
     // Keep generated .gitnexus contents ignored without editing the user's root .gitignore.
     await ensureGitNexusIgnored(repoPath);
     await clearAnalysisIncompleteMarker(storagePath);
-
-    // ── Generate AI context files (best-effort) ───────────────────────
-    let aggregatedClusterCount = 0;
-    if (pipelineResult.communityResult?.communities) {
-      const groups = new Map<string, number>();
-      for (const c of pipelineResult.communityResult.communities) {
-        const label = c.heuristicLabel || c.label || 'Unknown';
-        groups.set(label, (groups.get(label) || 0) + c.symbolCount);
-      }
-      aggregatedClusterCount = Array.from(groups.values()).filter((count) => count >= 5).length;
-    }
-
-    if (!options.indexOnly) {
-      try {
-        await generateAIContextFiles(
-          repoPath,
-          storagePath,
-          contextName,
-          {
-            files: pipelineResult.totalFileCount,
-            nodes: stats.nodes,
-            edges: stats.edges,
-            communities: pipelineResult.communityResult?.stats.totalCommunities,
-            clusters: aggregatedClusterCount,
-            processes: pipelineResult.processResult?.stats.totalProcesses,
-          },
-          undefined,
-          { skipAgentsMd: options.skipAgentsMd, noStats: options.noStats },
-        );
-      } catch {
-        // Best-effort — don't fail the entire analysis for context file issues
-      }
-    }
 
     // ── Close LadybugDB ──────────────────────────────────────────────
     await closeLbug();

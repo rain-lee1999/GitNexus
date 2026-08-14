@@ -88,6 +88,17 @@ describe('CLI help surface', () => {
     }
   }, 30_000);
 
+  it('agent-context help exposes explicit read-only plan and write apply actions', () => {
+    const result = runHelp('agent-context');
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('agent-context [options] <action>');
+    expect(result.stdout).toContain('--path <absolute-worktree>');
+    expect(result.stdout).toContain('--json');
+    expect(result.stdout).toContain('plan');
+    expect(result.stdout).toContain('apply');
+  });
+
   it('query help keeps advanced search options without importing analyze deps', () => {
     const result = runHelp('query');
 

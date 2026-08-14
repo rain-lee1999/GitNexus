@@ -108,6 +108,7 @@ local_docs/
 /.agents/*
 !/.agents/skills/
 /.agents/skills/*
+!/.agents/skills/.gitnexus-managed-commit
 !/.agents/skills/gitnexus-cli/
 !/.agents/skills/gitnexus-debugging/
 !/.agents/skills/gitnexus-exploring/

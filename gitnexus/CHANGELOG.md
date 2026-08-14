@@ -11,7 +11,7 @@ All notable changes to GitNexus will be documented in this file.
 
 ### Changed
 
-- **Codex-first repository assets** — `analyze` writes only `AGENTS.md` and native direct-child `.agents/skills/gitnexus-*` skills. Generated skills carry index-commit freshness metadata and no longer use `.claude/skills`.
+- **Safe-by-default repository assets** — plain `analyze` now updates graph/index/registry state without writing tracked agent assets. `agent-context plan/apply` is the reviewed path for `AGENTS.md` and native direct-child `.agents/skills/gitnexus-*`; legacy `analyze --skills` remains an explicit generated-skills compatibility path. Fixed skills use bundled-content freshness while generated skills retain index-commit freshness.
 - **Remote HTTP MCP is fail-closed** — non-loopback binds require a bearer token or an explicit insecure opt-in, expose read-only tools by default, and enforce request, rate, and session limits.
 - **MCP documentation is contract-tested** against the 13 tools exposed by the server.
 

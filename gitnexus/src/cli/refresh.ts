@@ -1,9 +1,10 @@
 /**
  * Worktree-safe graph refresh coordinator.
  *
- * `analyze` is intentionally a full repository operation: it owns a graph
- * database, touches the global registry, and may generate agent assets. This
- * command is the narrow automation boundary used by Codex/Git hooks. It
+ * `analyze` is intentionally a full graph/index operation: it owns a graph
+ * database and touches the global registry, while tracked agent assets require
+ * either explicit `agent-context apply` or the legacy explicit `analyze --skills`
+ * path. This command is the narrow automation boundary used by Codex/Git hooks. It
  * records staleness cheaply, runs at most one index-only writer per worktree,
  * and never needs to guess the caller's current checkout.
  */

@@ -9,23 +9,33 @@ All commands work via `npx` — no global install required.
 
 ## Commands
 
-### analyze — Generate managed assets or explicitly rebuild
+### analyze — Build or refresh the graph index
 
 ```bash
 npx gitnexus analyze
 ```
 
-Run from the project root. This parses source files, builds the knowledge graph, writes it to `.gitnexus/`, updates the managed section in `AGENTS.md`, and installs Codex-native repo skills under `.agents/skills/`.
+Run from the project root. This parses source files, builds the knowledge graph, writes it to `.gitnexus/`, and updates registry state. Plain `analyze` never writes `AGENTS.md` or `.agents/skills/`.
 
 | Flag                | Effect                                                                                               |
 | ------------------- | ---------------------------------------------------------------------------------------------------- |
 | `--force`           | Force full re-index even if up to date                                                               |
 | `--embeddings`      | Enable embedding generation for semantic search (off by default)                                     |
 | `--drop-embeddings` | Drop existing embeddings on rebuild. By default, an `analyze` without `--embeddings` preserves them. |
-| `--skills`          | Generate functional-area skills as `.agents/skills/gitnexus-generated-*`                             |
-| `--skip-agents-md`  | Leave the managed GitNexus section in `AGENTS.md` unchanged                                          |
+| `--skills`          | Legacy explicit write path: generate functional-area skills and refresh managed context              |
+| `--skip-agents-md`  | Legacy `--skills` only: leave the managed GitNexus section in `AGENTS.md` unchanged                  |
+| `--index-only`      | Deprecated compatibility alias; plain `analyze` already leaves tracked agent assets unchanged        |
 
-**When to run:** To generate managed `AGENTS.md`/skills, generate embeddings or functional-area skills, or perform an explicit repair (`--force`). `refresh ensure` below can bootstrap the first graph index and handles normal staleness. The Codex hooks mark Git-history drift and gate stale graph queries; they never run `analyze` directly.
+**When to run:** To build or repair the graph, generate embeddings, or intentionally use the legacy `--skills` write path. `refresh ensure` below can bootstrap the first graph index and handles normal staleness. The Codex hooks mark Git-history drift and gate stale graph queries; they never run `analyze` directly.
+
+### agent-context — Review and explicitly apply tracked context
+
+```bash
+gitnexus agent-context plan --path /absolute/path/to/worktree
+gitnexus agent-context apply --path /absolute/path/to/worktree --expect <plan-id>
+```
+
+`plan` reads the current index and repository assets, prints a full diff plus a plan ID, and writes no repository files. `apply --expect <plan-id>` is the normal reviewed command that updates the managed `AGENTS.md` block and the seven fixed `.agents/skills/gitnexus-*` files. The legacy explicit `analyze --skills` compatibility path may update the same managed assets while generating repo-specific skills. Managed skills are fingerprinted by their bundled content, not by the indexed source commit; repo-specific `gitnexus-generated-*` skills remain commit-freshness scoped.
 
 ### refresh — Worktree-safe graph freshness
 
@@ -43,7 +53,7 @@ gitnexus refresh ensure --path /absolute/path/to/worktree
 
 ```
 
-`refresh plan` lists GitNexus-owned write targets. Pass `--install-git-hooks` to plan when needed so it declares each managed `post-*` wrapper or an explicit skip. `refresh init` / `refresh ensure` write the worktree `.gitnexus/`, applicable Git metadata, and `GITNEXUS_HOME` (global registry and locks). For `--with-serena`, the plan lists GitNexus-known Serena paths but reports `writeTargetsComplete: false`: external language servers/toolchains may write environment-specific caches or install paths, requiring separate authority. `refresh ensure` runs `analyze --index-only`, so it never updates `AGENTS.md` or `.agents/skills/`, but it is not read-only. It can bootstrap the first graph index. If every planned GitNexus target (and the disclosed external Serena scope, if enabled) is not authorized, report the missing paths and use stale graph results only with a warning, `detect_changes`, and source inspection. In a multi-worktree Codex session, freshness-gated graph tools (`query`, `cypher`, `context`, `impact`, `route_map`, `tool_map`, `shape_check`, and `api_impact`) require `repo` as the absolute worktree path; the Codex gate rejects aliases and never starts a refresh. `detect_changes` is not freshness-gated.
+`refresh plan` lists GitNexus-owned write targets. Pass `--install-git-hooks` to plan when needed so it declares each managed `post-*` wrapper or an explicit skip. `refresh init` / `refresh ensure` write the worktree `.gitnexus/`, applicable Git metadata, and `GITNEXUS_HOME` (global registry and locks). For `--with-serena`, the plan lists GitNexus-known Serena paths but reports `writeTargetsComplete: false`: external language servers/toolchains may write environment-specific caches or install paths, requiring separate authority. `refresh ensure` uses the compatibility `analyze --index-only` path and never updates `AGENTS.md` or `.agents/skills/`, but it is not read-only. It can bootstrap the first graph index. If every planned GitNexus target (and the disclosed external Serena scope, if enabled) is not authorized, report the missing paths and use stale graph results only with a warning, `detect_changes`, and source inspection. In a multi-worktree Codex session, freshness-gated graph tools (`query`, `cypher`, `context`, `impact`, `route_map`, `tool_map`, `shape_check`, and `api_impact`) require `repo` as the absolute worktree path; the Codex gate rejects aliases and never starts a refresh. `detect_changes` is not freshness-gated.
 
 For Serena prewarm, pass the same `--with-serena`, `--serena-bin`, and `--serena-language` values to `refresh plan` first. That read-only plan additionally declares Serena's global config/lock and the resolved project-data directory.
 

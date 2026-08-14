@@ -22,13 +22,18 @@ AI coding tools don't understand your codebase structure. They edit a function w
 npx gitnexus analyze
 ```
 
-That's it. This indexes the codebase and creates Codex-native `AGENTS.md` plus repo skills under `.agents/skills/`.
+That's it. This indexes the codebase and leaves tracked agent assets unchanged. To add or refresh repo-local `AGENTS.md` plus the seven managed skills, review the read-only plan and then apply it explicitly:
+
+```bash
+npx gitnexus agent-context plan --path /absolute/path/to/worktree
+npx gitnexus agent-context apply --path /absolute/path/to/worktree --expect <plan-id>
+```
 
 To configure MCP for your editor, run `npx gitnexus setup` once — or set it up manually below.
 
 ### Worktree-safe refresh
 
-Use `refresh ensure` for the first graph index and ordinary graph freshness, but only after checking its write plan. Use a full `analyze` only when you want managed `AGENTS.md`/skills, embeddings, or an explicit repair. Initialize every worktree once; only a primary checkout using conventional hooks may install Git-side stale markers:
+Use `refresh ensure` for the first graph index and ordinary graph freshness, but only after checking its write plan. Use `agent-context plan/apply` for managed `AGENTS.md`/skills; use a full `analyze` for embeddings or an explicit repair. Initialize every worktree once; only a primary checkout using conventional hooks may install Git-side stale markers:
 
 ```bash
 # Read-only: inspect freshness and every path a refresh may mutate.
@@ -194,11 +199,14 @@ Your AI agent gets **13 tools** automatically:
 
 ```bash
 gitnexus setup                   # Configure MCP for your editors (one-time)
-gitnexus analyze [path]          # Generate managed assets/embeddings or explicitly rebuild
+gitnexus analyze [path]          # Index graph/metadata/registry; never write agent assets
 gitnexus analyze --force         # Force full re-index
-gitnexus analyze --index-only    # Graph/registry only; does not rewrite AGENTS.md or skills
+gitnexus agent-context plan --path /abs/worktree  # Read-only tracked-context diff
+gitnexus agent-context apply --path /abs/worktree --expect <plan-id>  # Explicit write
+gitnexus analyze --index-only    # Deprecated alias for the now-safe default
+gitnexus analyze --skills        # Legacy explicit generated-skills + context write path
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
-gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md GitNexus section edits
+gitnexus analyze --skip-agents-md  # Legacy --skills only: preserve AGENTS.md
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --max-file-size 1024  # Skip files larger than N KB (default: 512, cap: 32768)
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
@@ -288,7 +296,7 @@ GitNexus ships with skill files that teach AI agents how to use the tools effect
 - **Guide** — Reference the complete MCP surface and workflows
 - **CLI** — Operate indexing, status, cleanup, and wiki commands
 
-All seven are installed as direct `.agents/skills/gitnexus-*` children by `gitnexus analyze` (per-repo) and `gitnexus setup` (global). `gitnexus analyze --skills` also generates one `gitnexus-generated-*` skill per significant functional area.
+All seven are installed as direct `.agents/skills/gitnexus-*` children by explicit `gitnexus agent-context apply --path <absolute-worktree>` (per-repo) and `gitnexus setup` (global). The legacy `gitnexus analyze --skills` path remains an explicit tracked-write operation that also generates one `gitnexus-generated-*` skill per significant functional area.
 
 ## Requirements
 

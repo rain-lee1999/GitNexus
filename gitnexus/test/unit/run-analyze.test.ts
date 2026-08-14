@@ -68,7 +68,7 @@ describe('run-analyze module', () => {
     }
   });
 
-  it('keeps a preserved coordinator registry alias out of generated AGENTS context', async () => {
+  it('keeps the display name in its result without writing repository agent assets', async () => {
     const tmpRepo = await createTempDir('gitnexus-run-analyze-context-name-');
     const tmpHome = await createTempDir('gitnexus-run-analyze-context-name-home-');
     const savedGitnexusHome = process.env.GITNEXUS_HOME;
@@ -108,10 +108,12 @@ describe('run-analyze module', () => {
       const contextName = path.basename(tmpRepo.dbPath);
       expect(result.repoName).toBe(coordinatorAlias);
       expect(result.contextName).toBe(contextName);
-      const agents = await fs.readFile(path.join(tmpRepo.dbPath, 'AGENTS.md'), 'utf-8');
-      expect(agents).toContain(`indexed by GitNexus as **${contextName}**`);
-      expect(agents).toContain(`gitnexus://repo/${contextName}/context`);
-      expect(agents).not.toContain(coordinatorAlias);
+      await expect(fs.access(path.join(tmpRepo.dbPath, 'AGENTS.md'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await expect(fs.access(path.join(tmpRepo.dbPath, '.agents', 'skills'))).rejects.toMatchObject(
+        { code: 'ENOENT' },
+      );
     } finally {
       if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
       else process.env.GITNEXUS_HOME = savedGitnexusHome;
